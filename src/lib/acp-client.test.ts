@@ -34,10 +34,10 @@ describe("resolveAcpModelConfigValue", () => {
     ).toBe("gpt-4[fast=false]");
   });
 
-  it("returns pass-through when name not in catalog", () => {
+  it("falls back to default[] when name not in catalog", () => {
     expect(
       resolveAcpModelConfigValue("unknown", [{ modelId: "x[]", name: "gpt-4" }]),
-    ).toBe("unknown");
+    ).toBe("default[]");
   });
 
   it("uses first match when duplicate names", () => {

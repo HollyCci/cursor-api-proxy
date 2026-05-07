@@ -9,17 +9,20 @@ import { getAnthropicModelAliases } from "../model-map.js";
 const MODEL_CACHE_TTL_MS = 5 * 60_000;
 
 export type ModelCache = { at: number; models: CursorCliModel[] };
+export type ModelCacheRef = {
+  current?: ModelCache;
+  inflight?: Promise<CursorCliModel[]>;
+};
 
 export type HandleModelsOpts = {
   config: BridgeConfig;
-  modelCacheRef: { current?: ModelCache; inflight?: Promise<CursorCliModel[]> };
+  modelCacheRef: ModelCacheRef;
 };
 
-export async function handleModels(
-  res: http.ServerResponse,
-  opts: HandleModelsOpts,
-): Promise<void> {
-  const { config, modelCacheRef } = opts;
+export async function getCachedCursorModels(
+  config: BridgeConfig,
+  modelCacheRef: ModelCacheRef,
+): Promise<CursorCliModel[]> {
   const now = Date.now();
   if (
     !modelCacheRef.current ||
@@ -44,8 +47,15 @@ export async function handleModels(
     }
     await modelCacheRef.inflight;
   }
+  return modelCacheRef.current?.models ?? [];
+}
 
-  const models = modelCacheRef.current?.models ?? [];
+export async function handleModels(
+  res: http.ServerResponse,
+  opts: HandleModelsOpts,
+): Promise<void> {
+  const { config, modelCacheRef } = opts;
+  const models = await getCachedCursorModels(config, modelCacheRef);
   const cursorModels = models.map((m) => ({
     id: m.id,
     object: "model" as const,

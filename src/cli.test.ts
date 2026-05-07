@@ -13,7 +13,12 @@ import { describe, it, expect } from "vitest";
 import { parseArgs } from "./cli.js";
 
 describe("parseArgs", () => {
-  const base = { resetHwid: false, deepClean: false, dryRun: false };
+  const base = {
+    resetHwid: false,
+    deepClean: false,
+    dryRun: false,
+    verbose: false,
+  };
 
   it("parses empty argv", () => {
     expect(parseArgs([])).toEqual({
@@ -72,6 +77,20 @@ describe("parseArgs", () => {
       ...base,
       tailscale: true,
       help: true,
+      login: false,
+      logout: false,
+      accountsList: false,
+      accountName: "",
+      proxies: [],
+    });
+  });
+
+  it("parses --verbose", () => {
+    expect(parseArgs(["--verbose"])).toEqual({
+      ...base,
+      verbose: true,
+      tailscale: false,
+      help: false,
       login: false,
       logout: false,
       accountsList: false,

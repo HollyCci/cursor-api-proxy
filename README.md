@@ -230,6 +230,7 @@ CLI flags:
 | Flag           | Description                                                                                |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | `--tailscale`  | Bind to `0.0.0.0` for access from tailnet/LAN (unless `CURSOR_BRIDGE_HOST` is already set) |
+| `--verbose`    | Enable verbose logs (request/response previews + model resolution chain)                    |
 | `-h`, `--help` | Show CLI usage                                                                             |
 
 Optional per-request override: send header `X-Cursor-Workspace: <path>` to use a subdirectory of `CURSOR_BRIDGE_WORKSPACE` for that request (requires `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and an existing path on the proxy host).

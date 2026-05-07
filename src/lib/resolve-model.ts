@@ -11,7 +11,6 @@ export function resolveModel(
 ): string {
   const isDefault = requested === "default";
   const explicitModel = requested && !isDefault ? requested : undefined;
-  if (explicitModel) lastRequestedModelRef.current = explicitModel;
 
   // "default" matches ACP catalog name for session default model — pass through directly
   if (isDefault) return "default";
@@ -22,4 +21,15 @@ export function resolveModel(
     lastRequestedModelRef.current ??
     config.defaultModel
   );
+}
+
+/**
+ * Persist only the final model used for execution.
+ */
+export function rememberResolvedModel(
+  model: string,
+  lastRequestedModelRef: { current?: string },
+): void {
+  if (!model || model === "default") return;
+  lastRequestedModelRef.current = model;
 }

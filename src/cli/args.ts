@@ -1,5 +1,6 @@
 export type ParsedArgs = {
   tailscale: boolean;
+  verbose: boolean;
   help: boolean;
   login: boolean;
   accountsList: boolean;
@@ -13,6 +14,7 @@ export type ParsedArgs = {
 
 export function parseArgs(argv: string[]): ParsedArgs {
   let tailscale = false;
+  let verbose = false;
   let help = false;
   let login = false;
   let accountsList = false;
@@ -67,6 +69,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--verbose") {
+      verbose = true;
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       help = true;
       continue;
@@ -86,6 +93,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   return {
     tailscale,
+    verbose,
     help,
     login,
     accountsList,
@@ -122,5 +130,6 @@ export function printHelp(version: string): void {
   console.log("");
   console.log("Options:");
   console.log("  --tailscale     Bind to 0.0.0.0 for tailnet/LAN access");
+  console.log("  --verbose       Enable verbose request/model logs");
   console.log("  -h, --help      Show this help message");
 }
