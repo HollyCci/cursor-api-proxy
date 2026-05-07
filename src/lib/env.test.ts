@@ -20,6 +20,8 @@ describe("loadEnvConfig", () => {
     expect(loaded.workspace).toBe("/workspace");
     expect(loaded.sessionsLogPath).toBe(path.join("/workspace", "sessions.log"));
     expect(loaded.chatOnlyWorkspace).toBe(true);
+    expect(loaded.chatOnlyWorkspaceExplicit).toBe(false);
+    expect(loaded.mode).toBeUndefined();
     expect(loaded.verbose).toBe(false);
     expect(loaded.commandShell).toBe("cmd.exe");
     expect(loaded.maxMode).toBe(false);
@@ -64,6 +66,25 @@ describe("loadEnvConfig", () => {
     expect(loaded.strictModel).toBe(false);
     expect(loaded.timeoutMs).toBe(60000);
     expect(loaded.defaultModel).toBe("claude-3-opus");
+  });
+
+  it("parses CURSOR_BRIDGE_MODE and marks chat-only env as explicit", () => {
+    const loaded = loadEnvConfig({
+      env: {
+        CURSOR_BRIDGE_MODE: "plan",
+        CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE: "false",
+      },
+      cwd: "/w",
+    });
+    expect(loaded.mode).toBe("plan");
+    expect(loaded.chatOnlyWorkspaceExplicit).toBe(true);
+    expect(loaded.chatOnlyWorkspace).toBe(false);
+  });
+
+  it("throws on invalid CURSOR_BRIDGE_MODE", () => {
+    expect(() =>
+      loadEnvConfig({ env: { CURSOR_BRIDGE_MODE: "nope" }, cwd: "/w" }),
+    ).toThrow(/CURSOR_BRIDGE_MODE/);
   });
 
   it("resolves workspace and explicit paths from cwd", () => {

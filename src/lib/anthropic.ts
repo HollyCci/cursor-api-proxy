@@ -12,6 +12,8 @@ export type AnthropicMessageParam = {
 
 export type AnthropicMessagesRequest = {
   model?: string;
+  /** Cursor CLI mode override: agent | ask | plan */
+  mode?: string;
   max_tokens: number;
   messages: AnthropicMessageParam[];
   system?: string | Array<{ type?: string; text?: string }>;

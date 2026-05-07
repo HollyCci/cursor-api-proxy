@@ -1,3 +1,6 @@
+import type { CursorExecutionMode } from "../lib/execution-mode.js";
+import { parseExecutionModeFromRequest } from "../lib/execution-mode.js";
+
 export type ParsedArgs = {
   tailscale: boolean;
   verbose: boolean;
@@ -10,6 +13,8 @@ export type ParsedArgs = {
   resetHwid: boolean;
   deepClean: boolean;
   dryRun: boolean;
+  /** Set via `--mode`; default applied in config when omitted. */
+  mode?: CursorExecutionMode;
 };
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -24,6 +29,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let resetHwid = false;
   let deepClean = false;
   let dryRun = false;
+  let mode: CursorExecutionMode | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -74,6 +80,22 @@ export function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--mode") {
+      if (i + 1 >= argv.length || argv[i + 1]!.startsWith("-")) {
+        throw new Error("--mode requires a value (agent, ask, or plan)");
+      }
+      mode = parseExecutionModeFromRequest(argv[++i]!, "--mode");
+      continue;
+    }
+
+    if (arg.startsWith("--mode=")) {
+      mode = parseExecutionModeFromRequest(
+        arg.slice("--mode=".length),
+        "--mode",
+      );
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       help = true;
       continue;
@@ -103,6 +125,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     resetHwid,
     deepClean,
     dryRun,
+    mode,
   };
 }
 
@@ -131,5 +154,8 @@ export function printHelp(version: string): void {
   console.log("Options:");
   console.log("  --tailscale     Bind to 0.0.0.0 for tailnet/LAN access");
   console.log("  --verbose       Enable verbose request/model logs");
+  console.log(
+    "  --mode <agent|ask|plan>  Default Cursor CLI mode (overridden by env or per-request)",
+  );
   console.log("  -h, --help      Show this help message");
 }

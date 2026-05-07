@@ -174,7 +174,7 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_API_KEY` | — | If set, require `Authorization: Bearer <key>` on requests |
 | `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` | — | Cursor access token passed to spawned CLI/ACP children (automation, headless). Same value can be used for both names. |
 | `CURSOR_BRIDGE_WORKSPACE` | process cwd | Base workspace directory for Cursor CLI. With `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`, header `X-Cursor-Workspace` must point to an **existing directory under this path** (after resolving real paths). |
-| `CURSOR_BRIDGE_MODE` | — | Ignored; proxy always runs in **ask** (chat-only) mode so the CLI never creates or edits files. |
+| `CURSOR_BRIDGE_MODE` | — | Server default for Cursor CLI `--mode`: **`agent`**, **`ask`**, or **`plan`**. If unset, default is **`ask`**. **Env wins over** CLI `--mode` when both are set. Per request, JSON body **`mode`** or header **`X-Cursor-Mode`** overrides (precedence: body → header → this env → `--mode` → `ask`). Invalid value → startup error. With **`agent`** (or **`plan`**) and real workspace, the CLI may **read/write files** under `CURSOR_BRIDGE_WORKSPACE` / cwd—see `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE`. |
 | `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Default model when request omits one |
 | `CURSOR_BRIDGE_STRICT_MODEL` | `true` | Use last requested model when none specified |
 | `CURSOR_BRIDGE_FORCE` | `false` | Pass `--force` to Cursor CLI |
@@ -183,7 +183,7 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_TLS_CERT` | — | Path to TLS certificate file (e.g. Tailscale cert). Use with `CURSOR_BRIDGE_TLS_KEY` for HTTPS. |
 | `CURSOR_BRIDGE_TLS_KEY` | — | Path to TLS private key file. Use with `CURSOR_BRIDGE_TLS_CERT` for HTTPS. |
 | `CURSOR_BRIDGE_SESSIONS_LOG` | `~/.cursor-api-proxy/sessions.log` | Path to log file; each request is appended as a line (timestamp, method, path, IP, status). |
-| `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE` | `true` | When `true` (default), the CLI runs in an empty temp dir so it **cannot read or write your project**; pure chat only. The proxy also overrides `HOME`, `USERPROFILE`, and `CURSOR_CONFIG_DIR` so the agent cannot load rules from `~/.cursor` or project rules from elsewhere. Set to `false` to pass the real workspace (e.g. for `X-Cursor-Workspace`). |
+| `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE` | `true` | When `true` (default), the CLI runs in an empty temp dir so it **cannot read or write your project**; pure chat only. The proxy also overrides `HOME`, `USERPROFILE`, and `CURSOR_CONFIG_DIR` so the agent cannot load rules from `~/.cursor` or project rules from elsewhere. Set to `false` to pass the real workspace (e.g. for `X-Cursor-Workspace`). **Mode interaction:** for a request whose effective mode is not **`ask`**, if this variable was **not set in the environment** (left at default), the proxy uses the **real workspace** for that request so `agent` / `plan` can touch files. If you **did** set this variable in the environment (to `true` or `false`), that choice is **always** honored for every request. |
 | `CURSOR_BRIDGE_VERBOSE` | `false` | When `true`, print full request messages and response content to stdout for every completion (both stream and sync). |
 | `CURSOR_BRIDGE_MAX_MODE` | `false` | When `true`, enable Cursor **Max Mode** for all requests (larger context window, higher tool-call limits). The proxy writes `maxMode: true` to `cli-config.json` before each run. Works when using `CURSOR_AGENT_NODE`/`CURSOR_AGENT_SCRIPT`, the versioned layout (`versions/YYYY.MM.DD-commit/`), or node.exe + index.js next to agent.cmd. |
 | `CURSOR_BRIDGE_WIN_CMDLINE_MAX` | `30000` | **(Windows)** Upper bound (UTF-16 units, pessimistic) for the full `CreateProcess` command line. If the prompt would exceed it, the proxy keeps the **tail** of the prompt and prepends a short omission notice, logs a warning, and sets `X-Cursor-Proxy-Prompt-Truncated: true` on the response. Clamped to `4096`–`32700`. |
@@ -231,9 +231,13 @@ CLI flags:
 | -------------- | ------------------------------------------------------------------------------------------ |
 | `--tailscale`  | Bind to `0.0.0.0` for access from tailnet/LAN (unless `CURSOR_BRIDGE_HOST` is already set) |
 | `--verbose`    | Enable verbose logs (request/response previews + model resolution chain)                    |
+| `--mode`       | Default Cursor CLI mode: `agent`, `ask`, or `plan` (default `ask` if omitted). Overridden by `CURSOR_BRIDGE_MODE` when set. |
 | `-h`, `--help` | Show CLI usage                                                                             |
 
-Optional per-request override: send header `X-Cursor-Workspace: <path>` to use a subdirectory of `CURSOR_BRIDGE_WORKSPACE` for that request (requires `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and an existing path on the proxy host).
+Optional per-request overrides:
+
+- Header **`X-Cursor-Workspace: <path>`** — use a subdirectory of `CURSOR_BRIDGE_WORKSPACE` (requires real workspace: set `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` or use a non-`ask` mode without forcing chat-only; path must exist on the proxy host).
+- Header **`X-Cursor-Mode: <agent|ask|plan>`** or JSON body field **`mode`** — execution mode for that request (body wins over header).
 
 **CLI subcommands** (see `cursor-api-proxy --help`): `login <name>`, `accounts` (list), `logout`, `usage`, `reset-hwid` (see `--help` for options). Flags above still apply to the server entrypoint.
 

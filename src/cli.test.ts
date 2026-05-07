@@ -18,6 +18,7 @@ describe("parseArgs", () => {
     deepClean: false,
     dryRun: false,
     verbose: false,
+    mode: undefined as undefined,
   };
 
   it("parses empty argv", () => {
@@ -176,5 +177,41 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--unknown"])).toThrow(
       "Unknown argument: --unknown",
     );
+  });
+
+  it("parses --mode agent", () => {
+    expect(parseArgs(["--mode", "agent"])).toEqual({
+      ...base,
+      tailscale: false,
+      help: false,
+      login: false,
+      logout: false,
+      accountsList: false,
+      accountName: "",
+      proxies: [],
+      mode: "agent",
+    });
+  });
+
+  it("parses --mode=plan", () => {
+    expect(parseArgs(["--mode=plan"])).toEqual({
+      ...base,
+      tailscale: false,
+      help: false,
+      login: false,
+      logout: false,
+      accountsList: false,
+      accountName: "",
+      proxies: [],
+      mode: "plan",
+    });
+  });
+
+  it("throws on invalid --mode value", () => {
+    expect(() => parseArgs(["--mode", "bogus"])).toThrow(/invalid mode/);
+  });
+
+  it("throws when --mode has no value", () => {
+    expect(() => parseArgs(["--mode"])).toThrow(/requires a value/);
   });
 });

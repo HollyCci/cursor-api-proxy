@@ -1,6 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import type { CursorExecutionMode } from "./execution-mode.js";
+import { tryParseExecutionModeEnv } from "./execution-mode.js";
+
 export type EnvSource = Record<string, string | undefined>;
 
 export type EnvOptions = {
@@ -8,6 +11,8 @@ export type EnvOptions = {
   env?: EnvSource;
   cwd?: string;
   platform?: NodeJS.Platform;
+  /** CLI `--mode` (overridden by CURSOR_BRIDGE_MODE when set). */
+  mode?: CursorExecutionMode;
 };
 
 export type LoadedEnv = {
@@ -28,6 +33,9 @@ export type LoadedEnv = {
   tlsKeyPath?: string;
   sessionsLogPath: string;
   chatOnlyWorkspace: boolean;
+  /** True when CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE key exists in env. */
+  chatOnlyWorkspaceExplicit: boolean;
+  mode?: CursorExecutionMode;
   verbose: boolean;
   /** When true, set maxMode in cli-config.json before each run (larger context, more tools). */
   maxMode: boolean;
@@ -232,6 +240,13 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     Math.max(4096, Number.isFinite(winCmdlineRaw) ? winCmdlineRaw : 30_000),
   );
 
+  const chatOnlyWorkspaceExplicit = Object.prototype.hasOwnProperty.call(
+    env,
+    "CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE",
+  );
+
+  const mode = tryParseExecutionModeEnv(firstDefined(env, ["CURSOR_BRIDGE_MODE"]));
+
   return {
     agentBin:
       envString(env, [
@@ -264,11 +279,13 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
       cwd,
     ),
     sessionsLogPath,
+    chatOnlyWorkspaceExplicit,
     chatOnlyWorkspace: envBool(
       env,
       ["CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE"],
       true,
     ),
+    mode,
     verbose: envBool(env, ["CURSOR_BRIDGE_VERBOSE"], false),
     maxMode: envBool(env, ["CURSOR_BRIDGE_MAX_MODE"], false),
     promptViaStdin: envBool(env, ["CURSOR_BRIDGE_PROMPT_VIA_STDIN"], false),

@@ -1,5 +1,7 @@
 export type OpenAiChatCompletionRequest = {
   model?: string;
+  /** Cursor CLI mode override: agent | ask | plan */
+  mode?: string;
   messages: any[];
   stream?: boolean;
   tools?: any[];

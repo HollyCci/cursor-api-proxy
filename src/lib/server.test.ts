@@ -63,6 +63,7 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     timeoutMs: 30_000,
     sessionsLogPath: tmpLogPath,
     chatOnlyWorkspace: true,
+    chatOnlyWorkspaceExplicit: false,
     verbose: false,
     maxMode: false,
     promptViaStdin: false,
@@ -137,6 +138,8 @@ describe("startBridgeServer", () => {
     expect(data.ok).toBe(true);
     expect(data.version).toBe("1.0.0");
     expect(data.defaultModel).toBe("default");
+    expect(data.mode).toBe("ask");
+    expect(data.perRequestMode).toBe(true);
   });
 
   it("responds 200 on GET /v1/models", async () => {
@@ -275,6 +278,32 @@ describe("startBridgeServer", () => {
     expect(status).toBe(200);
     const data = JSON.parse(body);
     expect(data.model).toBe("default");
+  });
+
+  it("returns 400 for invalid body.mode on POST /v1/chat/completions", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(
+      servers[0],
+      "/v1/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-3-opus",
+          mode: "bogus",
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      },
+    );
+    expect(status).toBe(400);
+    const data = JSON.parse(body);
+    expect(data.error.code).toBe("invalid_mode");
   });
 
   it("should spawn multiple servers when multiPort is true", async () => {
