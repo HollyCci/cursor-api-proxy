@@ -22,6 +22,7 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     timeoutMs: 300_000,
     sessionsLogPath: "/tmp/sessions.log",
     chatOnlyWorkspace: false,
+    chatOnlyWorkspaceExplicit: false,
     verbose: false,
     maxMode: false,
     promptViaStdin: false,
@@ -52,6 +53,21 @@ describe("getChatOnlyEnvOverrides", () => {
 });
 
 describe("resolveWorkspace", () => {
+  it("uses temp dir when chat-only is effective", () => {
+    const cfg = baseConfig({ chatOnlyWorkspace: true });
+    const { workspaceDir, tempDir } = resolveWorkspace(cfg, undefined);
+    expect(tempDir).toBeDefined();
+    expect(workspaceDir).toContain("cursor-proxy-");
+  });
+
+  it("uses real workspace when effectiveChatOnly is false despite config.chatOnlyWorkspace", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ws-real-"));
+    const cfg = baseConfig({ workspace: tmp, chatOnlyWorkspace: true });
+    const { workspaceDir, tempDir } = resolveWorkspace(cfg, undefined, false);
+    expect(tempDir).toBeUndefined();
+    expect(fs.realpathSync(workspaceDir)).toBe(fs.realpathSync(tmp));
+  });
+
   it("rejects X-Cursor-Workspace outside configured base", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ws-base-"));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ws-out-"));

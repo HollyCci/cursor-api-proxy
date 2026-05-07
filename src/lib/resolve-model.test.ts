@@ -20,6 +20,7 @@ function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     timeoutMs: 30_000,
     sessionsLogPath: "/tmp/test.log",
     chatOnlyWorkspace: true,
+    chatOnlyWorkspaceExplicit: false,
     verbose: false,
     maxMode: false,
     promptViaStdin: false,

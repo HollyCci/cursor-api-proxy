@@ -60,7 +60,11 @@ async function main(): Promise<void> {
   const mergedEnv = args.verbose
     ? { ...process.env, CURSOR_BRIDGE_VERBOSE: "true" }
     : process.env;
-  const config = loadBridgeConfig({ tailscale: args.tailscale, env: mergedEnv });
+  const config = loadBridgeConfig({
+    tailscale: args.tailscale,
+    env: mergedEnv,
+    mode: args.mode,
+  });
   const servers = startBridgeServer({ version: pkg.version, config });
   setupGracefulShutdown(servers);
 }

@@ -18,6 +18,7 @@ describe("loadBridgeConfig", () => {
     expect(config.mode).toBe("ask");
     expect(config.workspace).toBe("/workspace");
     expect(config.chatOnlyWorkspace).toBe(true);
+    expect(config.chatOnlyWorkspaceExplicit).toBe(false);
     expect(config.sessionsLogPath).toBe(path.join("/workspace", "sessions.log"));
     expect(config.winCmdlineMax).toBe(30_000);
   });
@@ -55,6 +56,7 @@ describe("loadBridgeConfig", () => {
     expect(config.workspace).toContain("my-workspace");
     expect(config.timeoutMs).toBe(60000);
     expect(config.chatOnlyWorkspace).toBe(false);
+    expect(config.chatOnlyWorkspaceExplicit).toBe(true);
     expect(config.verbose).toBe(true);
     expect(config.tlsCertPath).toBe(
       path.resolve("/tmp/project", "./certs/test.crt"),
@@ -101,5 +103,40 @@ describe("loadBridgeConfig", () => {
     });
 
     expect(config.host).toBe("0.0.0.0");
+  });
+
+  it("reads CURSOR_BRIDGE_MODE from env", () => {
+    const config = loadBridgeConfig({
+      env: { CURSOR_BRIDGE_MODE: "agent", CURSOR_AGENT_BIN: "agent" },
+      cwd: "/workspace",
+    });
+    expect(config.mode).toBe("agent");
+  });
+
+  it("prefers env mode over CLI opts.mode", () => {
+    const config = loadBridgeConfig({
+      env: { CURSOR_BRIDGE_MODE: "plan", CURSOR_AGENT_BIN: "agent" },
+      mode: "agent",
+      cwd: "/workspace",
+    });
+    expect(config.mode).toBe("plan");
+  });
+
+  it("uses opts.mode when env unset", () => {
+    const config = loadBridgeConfig({
+      env: { CURSOR_AGENT_BIN: "agent" },
+      mode: "agent",
+      cwd: "/workspace",
+    });
+    expect(config.mode).toBe("agent");
+  });
+
+  it("throws on invalid CURSOR_BRIDGE_MODE", () => {
+    expect(() =>
+      loadBridgeConfig({
+        env: { CURSOR_BRIDGE_MODE: "bogus", CURSOR_AGENT_BIN: "agent" },
+        cwd: "/workspace",
+      }),
+    ).toThrow(/CURSOR_BRIDGE_MODE/);
   });
 });

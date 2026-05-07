@@ -1,6 +1,7 @@
+import type { CursorExecutionMode } from "./execution-mode.js";
 import { loadEnvConfig, resolveAgentCommand, type EnvOptions } from "./env.js";
 
-export type CursorExecutionMode = "agent" | "ask" | "plan";
+export type { CursorExecutionMode } from "./execution-mode.js";
 
 export type BridgeConfig = {
   agentBin: string;
@@ -28,6 +29,8 @@ export type BridgeConfig = {
   sessionsLogPath: string;
   /** When true (default), run CLI in an empty temp dir so it cannot read or write the real project. Pure chat only. */
   chatOnlyWorkspace: boolean;
+  /** True when CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE was set in the environment (any value). */
+  chatOnlyWorkspaceExplicit: boolean;
   /** When true, print full request/response content to stdout for each completion. */
   verbose: boolean;
   /** When true, enable Cursor Max Mode (larger context, more tool calls) via cli-config.json preflight. */
@@ -72,7 +75,7 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     port: env.port,
     requiredKey: env.requiredKey,
     defaultModel: env.defaultModel,
-    mode: "ask", // proxy is chat-only; CURSOR_BRIDGE_MODE is ignored
+    mode: env.mode ?? opts.mode ?? "ask",
     force: env.force,
     approveMcps: env.approveMcps,
     strictModel: env.strictModel,
@@ -82,6 +85,7 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     tlsKeyPath: env.tlsKeyPath,
     sessionsLogPath: env.sessionsLogPath,
     chatOnlyWorkspace: env.chatOnlyWorkspace,
+    chatOnlyWorkspaceExplicit: env.chatOnlyWorkspaceExplicit,
     verbose: env.verbose,
     maxMode: env.maxMode,
     promptViaStdin: env.promptViaStdin,

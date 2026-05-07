@@ -7,6 +7,7 @@ import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
 import { createStreamParser } from "../cli-stream-parser.js";
 import type { BridgeConfig } from "../config.js";
+import type { CursorExecutionMode } from "../execution-mode.js";
 import type { ModelCacheRef } from "./models.js";
 import { getCachedCursorModels } from "./models.js";
 import { json, writeSseHeaders } from "../http.js";
@@ -22,6 +23,7 @@ import {
   type TrafficMessage,
 } from "../request-log.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
+import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
 import { sanitizeMessages, sanitizeSystem } from "../sanitize.js";
 import {
@@ -128,11 +130,35 @@ export async function handleAnthropicMessages(
     !!body.stream,
   );
 
+  let mode: CursorExecutionMode;
+  try {
+    mode = resolveRequestMode(
+      config,
+      req.headers["x-cursor-mode"],
+      body.mode,
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Invalid mode";
+    json(res, 400, {
+      error: {
+        type: "invalid_request_error",
+        message: msg,
+        code: "invalid_mode",
+      },
+    });
+    return;
+  }
+
+  const effectiveChatOnly =
+    mode === "ask"
+      ? config.chatOnlyWorkspace
+      : config.chatOnlyWorkspaceExplicit && config.chatOnlyWorkspace;
+
   const headerWs = req.headers["x-cursor-workspace"];
   let workspaceDir: string;
   let tempDir: string | undefined;
   try {
-    const ws = resolveWorkspace(config, headerWs);
+    const ws = resolveWorkspace(config, headerWs, effectiveChatOnly);
     workspaceDir = ws.workspaceDir;
     tempDir = ws.tempDir;
   } catch (e) {
@@ -148,6 +174,8 @@ export async function handleAnthropicMessages(
     workspaceDir,
     cursorModel,
     !!body.stream,
+    mode,
+    effectiveChatOnly,
   );
   const fit = fitPromptToWinCmdline(config.agentBin, fixedArgs, prompt, {
     maxCmdline: config.winCmdlineMax,
@@ -217,6 +245,7 @@ export async function handleAnthropicMessages(
       runAgentStream(
         config,
         workspaceDir,
+        effectiveChatOnly,
         cmdArgs,
         (chunk) => {
           accumulated += chunk;
@@ -327,6 +356,7 @@ export async function handleAnthropicMessages(
     runAgentStream(
       config,
       workspaceDir,
+      effectiveChatOnly,
       cmdArgs,
       parseLine,
       tempDir,
@@ -385,6 +415,7 @@ export async function handleAnthropicMessages(
   const out = await runAgentSync(
     config,
     workspaceDir,
+    effectiveChatOnly,
     cmdArgs,
     tempDir,
     promptForAgent,

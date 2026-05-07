@@ -50,8 +50,13 @@ export function getChatOnlyEnvOverrides(
 export function resolveWorkspace(
   config: BridgeConfig,
   workspaceHeader?: string | string[] | null,
+  effectiveChatOnly?: boolean,
 ): WorkspaceResult {
-  if (config.chatOnlyWorkspace) {
+  const useChatOnly =
+    effectiveChatOnly !== undefined
+      ? effectiveChatOnly
+      : config.chatOnlyWorkspace;
+  if (useChatOnly) {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-proxy-"));
     const cursorDir = path.join(tempDir, ".cursor");
     fs.mkdirSync(cursorDir, { recursive: true });
