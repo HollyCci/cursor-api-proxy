@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 
 import type { BridgeConfig } from "../config.js";
+import type { ModelCacheRef } from "./models.js";
+import { getCachedCursorModels } from "./models.js";
 import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
 import { createStreamParser } from "../cli-stream-parser.js";
 import { json, writeSseHeaders } from "../http.js";
-import { resolveToCursorModel } from "../model-map.js";
+import { resolveModelForExecution } from "../model-map.js";
 import {
   buildPromptFromMessages,
   normalizeModelId,
@@ -17,11 +19,12 @@ import {
   logAgentError,
   logAccountAssigned,
   logAccountStats,
+  logModelResolution,
   logTrafficRequest,
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
-import { resolveModel } from "../resolve-model.js";
+import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveWorkspace } from "../workspace.js";
 import { sanitizeMessages } from "../sanitize.js";
 import {
@@ -45,6 +48,7 @@ function isRateLimited(stderr: string): boolean {
 export type ChatCompletionsCtx = {
   config: BridgeConfig;
   lastRequestedModelRef: { current?: string };
+  modelCacheRef: ModelCacheRef;
 };
 
 export async function handleChatCompletions(
@@ -56,14 +60,22 @@ export async function handleChatCompletions(
   pathname: string,
   remoteAddress: string,
 ): Promise<void> {
-  const { config, lastRequestedModelRef } = ctx;
+  const { config, lastRequestedModelRef, modelCacheRef } = ctx;
   const body = JSON.parse(rawBody || "{}") as OpenAiChatCompletionRequest;
   const requested = normalizeModelId(body.model);
   const model = resolveModel(requested, lastRequestedModelRef, config);
-  const cursorModel = resolveToCursorModel(model) ?? model;
+  const models = await getCachedCursorModels(config, modelCacheRef);
+  const decision = resolveModelForExecution({
+    requested: model,
+    defaultModel: config.defaultModel,
+    availableCursorIds: models.map((m) => m.id),
+  });
+  const cursorModel = decision.final;
+  rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  logModelResolution(config.verbose, decision);
   // When request is "default", use defaultModel for response display (dashboard) if set; else echo "default"
   const displayModel =
-    requested === "default" && config.defaultModel !== "default"
+    decision.requestedWasDefault && config.defaultModel !== "default"
       ? config.defaultModel
       : model;
 

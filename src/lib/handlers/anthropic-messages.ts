@@ -7,18 +7,21 @@ import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
 import { createStreamParser } from "../cli-stream-parser.js";
 import type { BridgeConfig } from "../config.js";
+import type { ModelCacheRef } from "./models.js";
+import { getCachedCursorModels } from "./models.js";
 import { json, writeSseHeaders } from "../http.js";
-import { resolveToCursorModel } from "../model-map.js";
+import { resolveModelForExecution } from "../model-map.js";
 import { normalizeModelId, toolsToSystemText } from "../openai.js";
 import {
   logAgentError,
   logAccountAssigned,
   logAccountStats,
+  logModelResolution,
   logTrafficRequest,
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
-import { resolveModel } from "../resolve-model.js";
+import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveWorkspace } from "../workspace.js";
 import { sanitizeMessages, sanitizeSystem } from "../sanitize.js";
 import {
@@ -42,6 +45,7 @@ function isRateLimited(stderr: string): boolean {
 export type AnthropicMessagesCtx = {
   config: BridgeConfig;
   lastRequestedModelRef: { current?: string };
+  modelCacheRef: ModelCacheRef;
 };
 
 export async function handleAnthropicMessages(
@@ -53,12 +57,21 @@ export async function handleAnthropicMessages(
   pathname: string,
   remoteAddress: string,
 ): Promise<void> {
-  const { config, lastRequestedModelRef } = ctx;
+  const { config, lastRequestedModelRef, modelCacheRef } = ctx;
   const body = JSON.parse(rawBody || "{}") as AnthropicMessagesRequest;
   const requested = normalizeModelId(body.model);
   const model = resolveModel(requested, lastRequestedModelRef, config);
+  const models = await getCachedCursorModels(config, modelCacheRef);
+  const decision = resolveModelForExecution({
+    requested: model,
+    defaultModel: config.defaultModel,
+    availableCursorIds: models.map((m) => m.id),
+  });
+  const cursorModel = decision.final;
+  rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  logModelResolution(config.verbose, decision);
   const displayModel =
-    requested === "default" && config.defaultModel !== "default"
+    decision.requestedWasDefault && config.defaultModel !== "default"
       ? config.defaultModel
       : model;
 
@@ -85,8 +98,6 @@ export async function handleAnthropicMessages(
     });
     return;
   }
-
-  const cursorModel = resolveToCursorModel(model) ?? model;
 
   const trafficMessages: TrafficMessage[] = [];
   if (cleanSystem) {

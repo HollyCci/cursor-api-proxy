@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { AccountStat } from "./account-pool.js";
+import type { ModelResolutionDecision } from "./model-map.js";
 
 export function logIncoming(
   method: string,
@@ -153,6 +154,24 @@ export function logTrafficResponse(
   );
   console.log(`  🤖 ${C.green}${preview}${C.reset}`);
   console.log(hr("─", 60));
+}
+
+export function logModelResolution(
+  verbose: boolean,
+  decision: ModelResolutionDecision,
+): void {
+  if (!verbose) return;
+  const requested = decision.requested ?? "(none)";
+  const mapped = decision.mapped ?? "(none)";
+  const fallback = decision.fallbackUsed
+    ? `${C.yellow}yes${C.reset}${decision.fallbackReason ? ` (${decision.fallbackReason})` : ""}`
+    : `${C.dim}no${C.reset}`;
+  const validated = decision.validated
+    ? `${C.green}yes${C.reset}`
+    : `${C.red}no${C.reset}`;
+  console.log(
+    `${ts()} ${C.bMagenta}MODEL${C.reset} requested=${C.white}${requested}${C.reset} mapped=${C.white}${mapped}${C.reset} final=${C.bold}${decision.final}${C.reset} validated=${validated} fallback=${fallback}`,
+  );
 }
 
 export function appendSessionLine(

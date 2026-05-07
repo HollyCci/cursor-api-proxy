@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 
 import type { BridgeConfig } from "./config.js";
-import type { ModelCache } from "./handlers/models.js";
+import type { ModelCacheRef } from "./handlers/models.js";
 import { handleHealth } from "./handlers/health.js";
 import { handleModels } from "./handlers/models.js";
 import { handleChatCompletions } from "./handlers/chat-completions.js";
@@ -18,7 +18,7 @@ export type BridgeServerOptions = {
 
 export function createRequestListener(opts: BridgeServerOptions) {
   const { config } = opts;
-  const modelCacheRef: { current?: ModelCache } = { current: undefined };
+  const modelCacheRef: ModelCacheRef = { current: undefined };
   const lastRequestedModelRef: { current?: string } = {};
 
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -73,7 +73,7 @@ export function createRequestListener(opts: BridgeServerOptions) {
         await handleChatCompletions(
           req,
           res,
-          { config, lastRequestedModelRef },
+          { config, lastRequestedModelRef, modelCacheRef },
           raw,
           method,
           pathname,
@@ -87,7 +87,7 @@ export function createRequestListener(opts: BridgeServerOptions) {
         await handleAnthropicMessages(
           req,
           res,
-          { config, lastRequestedModelRef },
+          { config, lastRequestedModelRef, modelCacheRef },
           raw,
           method,
           pathname,

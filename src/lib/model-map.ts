@@ -3,6 +3,16 @@
  * so clients like Claude Code can send "claude-opus-4-6" and the proxy uses "opus-4.6".
  */
 
+export type ModelResolutionDecision = {
+  requested?: string;
+  mapped?: string;
+  final: string;
+  requestedWasDefault: boolean;
+  validated: boolean;
+  fallbackUsed: boolean;
+  fallbackReason?: string;
+};
+
 /** Anthropic-style model name (any case) -> Cursor CLI model id */
 const ANTHROPIC_TO_CURSOR: Record<string, string> = {
   // Claude 4.6
@@ -42,14 +52,129 @@ const CURSOR_TO_ANTHROPIC_ALIAS: Array<{ cursorId: string; anthropicId: string; 
   { cursorId: "sonnet-4.5-thinking", anthropicId: "claude-sonnet-4-5-thinking", name: "Claude 4.5 Sonnet (Thinking)" },
 ];
 
+function normalizeForLookup(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function mapClaudeDatedVariant(key: string): string | undefined {
+  const trimmed = key.trim().toLowerCase();
+  const simplified = trimmed.replace(/-v\d+$/i, "");
+  const match = simplified.match(
+    /^claude-(opus|sonnet|haiku)-4(?:[.-](5|6))?(?:-thinking)?(?:-\d{8})?$/,
+  );
+  if (!match) return undefined;
+
+  const family = match[1];
+  const version = match[2];
+  const isThinking = simplified.includes("-thinking");
+
+  const normalizedFamily = family === "haiku" ? "sonnet" : family;
+  const normalizedVersion = version ?? "6";
+  const suffix = isThinking ? "-thinking" : "";
+  return `${normalizedFamily}-4.${normalizedVersion}${suffix}`;
+}
+
 /**
  * Resolve a requested model (e.g. from the client) to the Cursor CLI model ID.
  * If the request uses an Anthropic-style name, returns the mapped Cursor ID; otherwise returns the value as-is.
  */
 export function resolveToCursorModel(requested: string | undefined): string | undefined {
   if (!requested || !requested.trim()) return undefined;
-  const key = requested.trim().toLowerCase();
-  return ANTHROPIC_TO_CURSOR[key] ?? requested.trim();
+  const key = normalizeForLookup(requested);
+  return ANTHROPIC_TO_CURSOR[key] ?? mapClaudeDatedVariant(key) ?? requested.trim();
+}
+
+function matchAvailableModel(
+  candidate: string | undefined,
+  availableCursorIds: string[],
+): string | undefined {
+  if (!candidate) return undefined;
+  const byLower = new Map(availableCursorIds.map((id) => [id.toLowerCase(), id]));
+  return byLower.get(candidate.toLowerCase());
+}
+
+export function resolveModelForExecution(args: {
+  requested: string | undefined;
+  defaultModel: string;
+  availableCursorIds: string[];
+}): ModelResolutionDecision {
+  const requested = args.requested?.trim();
+  const requestedWasDefault = requested === "default";
+  const mapped = requestedWasDefault
+    ? "default"
+    : resolveToCursorModel(requested) ?? args.defaultModel;
+
+  if (mapped === "default") {
+    return {
+      requested,
+      mapped,
+      final: "default",
+      requestedWasDefault,
+      validated: true,
+      fallbackUsed: false,
+    };
+  }
+
+  const matchedMapped = matchAvailableModel(mapped, args.availableCursorIds);
+  if (matchedMapped) {
+    return {
+      requested,
+      mapped,
+      final: matchedMapped,
+      requestedWasDefault,
+      validated: true,
+      fallbackUsed: false,
+    };
+  }
+
+  const matchedDefault = matchAvailableModel(args.defaultModel, args.availableCursorIds);
+  if (matchedDefault) {
+    return {
+      requested,
+      mapped,
+      final: matchedDefault,
+      requestedWasDefault,
+      validated: true,
+      fallbackUsed: true,
+      fallbackReason: "mapped_model_unavailable",
+    };
+  }
+
+  const matchedAuto = matchAvailableModel("auto", args.availableCursorIds);
+  if (matchedAuto) {
+    return {
+      requested,
+      mapped,
+      final: matchedAuto,
+      requestedWasDefault,
+      validated: true,
+      fallbackUsed: true,
+      fallbackReason: "mapped_model_unavailable",
+    };
+  }
+
+  const firstAvailable = args.availableCursorIds[0];
+  if (firstAvailable) {
+    return {
+      requested,
+      mapped,
+      final: firstAvailable,
+      requestedWasDefault,
+      validated: true,
+      fallbackUsed: true,
+      fallbackReason: "mapped_model_unavailable",
+    };
+  }
+
+  return {
+    requested,
+    mapped,
+    final: mapped,
+    requestedWasDefault,
+    validated: false,
+    fallbackUsed: false,
+    fallbackReason: "catalog_unavailable",
+  };
 }
 
 /**

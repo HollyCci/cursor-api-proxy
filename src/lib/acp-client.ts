@@ -200,7 +200,7 @@ export type AcpAvailableModel = { modelId: string; name: string };
 /**
  * Map OpenAI-style display name to Cursor ACP `modelId` (e.g. `composer-2` → `composer-2[fast=true]`).
  * If `availableModels` is missing or empty, returns `displayName` unchanged.
- * If the list is non-empty but no row matches `name`, logs via debug and returns `displayName` (pass-through).
+ * If the list is non-empty but no row matches `name`, logs via debug and falls back to session default.
  * Duplicate `name` entries: first match wins.
  */
 export function resolveAcpModelConfigValue(
@@ -211,10 +211,10 @@ export function resolveAcpModelConfigValue(
   const hit = availableModels.find((m) => m.name === displayName);
   if (!hit) {
     debugAcp(
-      "ACP model: no catalog match for display name %j; using value as-is",
+      "ACP model: no catalog match for display name %j; falling back to default[]",
       displayName,
     );
-    return displayName;
+    return "default[]";
   }
   return hit.modelId;
 }
