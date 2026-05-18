@@ -8,6 +8,10 @@ import { handleHealth } from "./handlers/health.js";
 import { handleModels } from "./handlers/models.js";
 import { handleChatCompletions } from "./handlers/chat-completions.js";
 import { handleAnthropicMessages } from "./handlers/anthropic-messages.js";
+import {
+  adminDashboardMatches,
+  handleAdminDashboard,
+} from "./admin-dashboard.js";
 import { extractBearerToken, json, readBody } from "./http.js";
 import { appendSessionLine, logIncoming } from "./request-log.js";
 
@@ -31,18 +35,37 @@ export function createRequestListener(opts: BridgeServerOptions) {
     const method = req.method ?? "?";
     const pathname = url.pathname;
 
-    logIncoming(method, pathname, remoteAddress);
-    res.on("finish", () => {
-      appendSessionLine(
-        config.sessionsLogPath,
-        method,
-        pathname,
-        remoteAddress,
-        res.statusCode,
-      );
-    });
+    // Skip request logging for the admin dashboard's own traffic
+    // (status/log/stats polls, asset loads, control actions). These are
+    // self-referential noise that pollutes the live log tail the dashboard
+    // reads from the sessions log file.
+    const isAdminDashboardReq = adminDashboardMatches(req);
+
+    if (!isAdminDashboardReq) {
+      logIncoming(method, pathname, remoteAddress);
+      res.on("finish", () => {
+        appendSessionLine(
+          config.sessionsLogPath,
+          method,
+          pathname,
+          remoteAddress,
+          res.statusCode,
+        );
+      });
+    }
 
     try {
+      if (req.method === "GET" && pathname === "/healthz") {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("ok\n");
+        return;
+      }
+
+      if (isAdminDashboardReq) {
+        handleAdminDashboard(req, res, opts);
+        return;
+      }
+
       if (config.requiredKey) {
         const token = extractBearerToken(req) ?? "";
         const expected = config.requiredKey;

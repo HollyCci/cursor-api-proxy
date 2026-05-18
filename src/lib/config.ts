@@ -1,5 +1,21 @@
+import * as fs from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import type { CursorExecutionMode } from "./execution-mode.js";
 import { loadEnvConfig, resolveAgentCommand, type EnvOptions } from "./env.js";
+
+function readBridgePackageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(here, "../../package.json");
+    const raw = fs.readFileSync(pkgPath, "utf-8");
+    const pkg = JSON.parse(raw) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 export type { CursorExecutionMode } from "./execution-mode.js";
 
@@ -51,6 +67,12 @@ export type BridgeConfig = {
   multiPort: boolean;
   /** Windows CreateProcess command-line budget for prompt truncation (ignored on non-Windows). */
   winCmdlineMax: number;
+  /** Prepend bridge/workspace context to the agent prompt (see CURSOR_BRIDGE_CONTEXT_PREAMBLE). */
+  contextPreamble: boolean;
+  /** `version` field from this package’s package.json (shown in the bridge preamble). */
+  bridgePackageVersion: string;
+  /** Optional operator notes appended to the preamble (see CURSOR_BRIDGE_CONTEXT_EXTRA). */
+  contextExtra?: string;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -105,5 +127,8 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     configDirs: env.configDirs ?? [],
     multiPort: env.multiPort,
     winCmdlineMax: env.winCmdlineMax,
+    contextPreamble: env.contextPreamble,
+    bridgePackageVersion: readBridgePackageVersion(),
+    contextExtra: env.contextExtra,
   };
 }

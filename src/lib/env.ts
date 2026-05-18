@@ -52,6 +52,16 @@ export type LoadedEnv = {
    * On win32 the proxy truncates the prompt tail to stay under this budget.
    */
   winCmdlineMax: number;
+  /**
+   * When true, prepend a short factual block to the agent prompt describing the
+   * bridge, HTTP route, workspace paths, and optional client headers.
+   */
+  contextPreamble: boolean;
+  /**
+   * Optional free-text block appended to the bridge preamble (operator facts).
+   * From `CURSOR_BRIDGE_CONTEXT_EXTRA`; stripped of NUL, max 400 UTF-16 units.
+   */
+  contextExtra?: string;
 };
 
 export type AgentCommand = {
@@ -112,6 +122,19 @@ function envNumber(
   if (raw == null) return defaultValue;
   const value = Number(raw);
   return Number.isFinite(value) ? value : defaultValue;
+}
+
+const CONTEXT_EXTRA_MAX = 400;
+
+/** Optional multiline operator notes for the bridge preamble (no secrets). */
+function envContextExtra(env: EnvSource): string | undefined {
+  const raw = firstDefined(env, ["CURSOR_BRIDGE_CONTEXT_EXTRA"]);
+  if (raw == null) return undefined;
+  const noNul = String(raw).replace(/\0/g, "");
+  const trimmed = noNul.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length <= CONTEXT_EXTRA_MAX) return trimmed;
+  return `${trimmed.slice(0, CONTEXT_EXTRA_MAX - 1)}…`;
 }
 
 function normalizeModelId(raw: string | undefined): string {
@@ -240,6 +263,14 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     Math.max(4096, Number.isFinite(winCmdlineRaw) ? winCmdlineRaw : 30_000),
   );
 
+  const contextPreamble = envBool(
+    env,
+    ["CURSOR_BRIDGE_CONTEXT_PREAMBLE"],
+    true,
+  );
+
+  const contextExtra = envContextExtra(env);
+
   const chatOnlyWorkspaceExplicit = Object.prototype.hasOwnProperty.call(
     env,
     "CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE",
@@ -293,6 +324,8 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     configDirs,
     multiPort: envBool(env, ["CURSOR_BRIDGE_MULTI_PORT"], false),
     winCmdlineMax,
+    contextPreamble,
+    contextExtra,
   };
 }
 

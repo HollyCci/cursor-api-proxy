@@ -174,6 +174,10 @@ export function runStreaming(
       opts.signal?.removeEventListener("abort", onAbort);
       activeChildren.delete(child);
       if (lineBuffer.trim()) opts.onLine(lineBuffer.trim());
+      if (signal) {
+        const signalNote = `terminated by signal ${signal}`;
+        stderr = stderr.trim() ? `${stderr.trim()}\n${signalNote}` : signalNote;
+      }
       resolve({ code: code ?? (signal ? -1 : 0), stderr });
     });
   });
@@ -239,6 +243,10 @@ export function run(
       if (timeout) clearTimeout(timeout);
       opts.signal?.removeEventListener("abort", onAbort);
       activeChildren.delete(child);
+      if (signal) {
+        const signalNote = `terminated by signal ${signal}`;
+        stderr = stderr.trim() ? `${stderr.trim()}\n${signalNote}` : signalNote;
+      }
       resolve({ code: code ?? (signal ? -1 : 0), stdout, stderr });
     });
   });

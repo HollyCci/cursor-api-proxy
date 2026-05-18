@@ -13,3 +13,5 @@ sessions.log
 logs/
 # Local Cursor rules (no-pii etc.) — keep out of public fork
 .cursor/
+# SwiftPM build artifacts (widget)
+widget-mac/.build/

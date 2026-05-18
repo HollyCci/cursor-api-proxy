@@ -21,6 +21,9 @@ describe("loadBridgeConfig", () => {
     expect(config.chatOnlyWorkspaceExplicit).toBe(false);
     expect(config.sessionsLogPath).toBe(path.join("/workspace", "sessions.log"));
     expect(config.winCmdlineMax).toBe(30_000);
+    expect(config.contextPreamble).toBe(true);
+    expect(config.bridgePackageVersion).toMatch(/^\d+\.\d+\.\d+/);
+    expect(config.contextExtra).toBeUndefined();
   });
 
   it("assembles config from the centralized env layer", () => {
@@ -93,6 +96,17 @@ describe("loadBridgeConfig", () => {
       cwd: "/workspace",
     });
     expect(config.acpRawDebug).toBe(true);
+  });
+
+  it("loads CURSOR_BRIDGE_CONTEXT_EXTRA", () => {
+    const config = loadBridgeConfig({
+      env: {
+        CURSOR_AGENT_BIN: "agent",
+        CURSOR_BRIDGE_CONTEXT_EXTRA: "  line1\nline2  ",
+      },
+      cwd: "/workspace",
+    });
+    expect(config.contextExtra).toBe("line1\nline2");
   });
 
   it("uses tailscale host fallback without mutating process.env", () => {

@@ -3,6 +3,11 @@ import * as http from "node:http";
 
 import type { AnthropicMessagesRequest } from "../anthropic.js";
 import { buildPromptFromAnthropicMessages } from "../anthropic.js";
+import {
+  buildBridgeContextPreamble,
+  BRIDGE_AGENT_PROMPT_SEPARATOR,
+} from "../bridge-context-preamble.js";
+import { resolveClientLaunchInfo } from "../client-process.js";
 import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
 import { createStreamParser } from "../cli-stream-parser.js";
@@ -169,6 +174,17 @@ export async function handleAnthropicMessages(
     return;
   }
 
+  const agentPrompt = config.contextPreamble
+    ? `${buildBridgeContextPreamble({
+        headers: req.headers,
+        bridgeWorkspaceBase: config.workspace,
+        agentWorkspaceDir: workspaceDir,
+        isolatedChatOnly: tempDir !== undefined,
+        cursorMode: mode,
+        contextExtra: config.contextExtra,
+      })}${BRIDGE_AGENT_PROMPT_SEPARATOR}${prompt}`
+    : prompt;
+
   const fixedArgs = buildAgentFixedArgs(
     config,
     workspaceDir,
@@ -177,7 +193,7 @@ export async function handleAnthropicMessages(
     mode,
     effectiveChatOnly,
   );
-  const fit = fitPromptToWinCmdline(config.agentBin, fixedArgs, prompt, {
+  const fit = fitPromptToWinCmdline(config.agentBin, fixedArgs, agentPrompt, {
     maxCmdline: config.winCmdlineMax,
     platform: process.platform,
     cwd: workspaceDir,
@@ -204,7 +220,7 @@ export async function handleAnthropicMessages(
     : undefined;
 
   const promptForAgent =
-    config.promptViaStdin || config.useAcp ? prompt : undefined;
+    config.promptViaStdin || config.useAcp ? agentPrompt : undefined;
 
   if (body.stream) {
     writeSseHeaders(res, truncatedHeaders);
@@ -450,7 +466,7 @@ export async function handleAnthropicMessages(
   const content = out.stdout.trim();
   logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
   logAccountStats(config.verbose, getAccountStats());
-  const inTok = Math.max(1, Math.round(prompt.length / 4));
+  const inTok = Math.max(1, Math.round(agentPrompt.length / 4));
   const outTok = Math.max(1, Math.round(content.length / 4));
   json(
     res,

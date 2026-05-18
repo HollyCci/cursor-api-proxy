@@ -28,6 +28,7 @@ import {
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
+import { buildBridgeContextPreamble, BRIDGE_AGENT_PROMPT_SEPARATOR } from "../bridge-context-preamble.js";
 import { sanitizeMessages } from "../sanitize.js";
 import {
   getNextAccountConfigDir,
@@ -139,6 +140,17 @@ export async function handleChatCompletions(
     return;
   }
 
+  const agentPrompt = config.contextPreamble
+    ? `${buildBridgeContextPreamble({
+        headers: req.headers,
+        bridgeWorkspaceBase: config.workspace,
+        agentWorkspaceDir: workspaceDir,
+        isolatedChatOnly: tempDir !== undefined,
+        cursorMode: mode,
+        contextExtra: config.contextExtra,
+      })}${BRIDGE_AGENT_PROMPT_SEPARATOR}${prompt}`
+    : prompt;
+
   const fixedArgs = buildAgentFixedArgs(
     config,
     workspaceDir,
@@ -147,7 +159,7 @@ export async function handleChatCompletions(
     mode,
     effectiveChatOnly,
   );
-  const fit = fitPromptToWinCmdline(config.agentBin, fixedArgs, prompt, {
+  const fit = fitPromptToWinCmdline(config.agentBin, fixedArgs, agentPrompt, {
     maxCmdline: config.winCmdlineMax,
     platform: process.platform,
     cwd: workspaceDir,
@@ -171,7 +183,7 @@ export async function handleChatCompletions(
   const created = Math.floor(Date.now() / 1000);
 
   const promptForAgent =
-    config.promptViaStdin || config.useAcp ? prompt : undefined;
+    config.promptViaStdin || config.useAcp ? agentPrompt : undefined;
 
   const truncatedHeaders = fit.truncated
     ? { "X-Cursor-Proxy-Prompt-Truncated": "true" }
@@ -256,7 +268,7 @@ export async function handleChatCompletions(
             accumulated,
             true,
           );
-          const promptTokens = Math.max(1, Math.round(prompt.length / 4));
+          const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
           const completionTokens = Math.max(
             1,
             Math.round(accumulated.length / 4),
@@ -325,7 +337,7 @@ export async function handleChatCompletions(
           accumulated,
           true,
         );
-        const promptTokens = Math.max(1, Math.round(prompt.length / 4));
+        const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
         const completionTokens = Math.max(
           1,
           Math.round(accumulated.length / 4),
@@ -445,7 +457,7 @@ export async function handleChatCompletions(
   const content = out.stdout.trim();
   logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
 
-  const promptTokens = Math.max(1, Math.round(prompt.length / 4));
+  const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
   const completionTokens = Math.max(1, Math.round(content.length / 4));
   const totalTokens = promptTokens + completionTokens;
 

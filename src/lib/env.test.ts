@@ -27,6 +27,7 @@ describe("loadEnvConfig", () => {
     expect(loaded.maxMode).toBe(false);
     expect(loaded.promptViaStdin).toBe(false);
     expect(loaded.useAcp).toBe(false);
+    expect(loaded.contextPreamble).toBe(true);
   });
 
   it("applies env aliases with expected precedence", () => {
@@ -268,6 +269,32 @@ describe("loadEnvConfig", () => {
       loadEnvConfig({ env: { CURSOR_BRIDGE_WIN_CMDLINE_MAX: "100" } })
         .winCmdlineMax,
     ).toBe(4096);
+  });
+
+  it("parses CURSOR_BRIDGE_CONTEXT_PREAMBLE", () => {
+    expect(loadEnvConfig({ env: {} }).contextPreamble).toBe(true);
+    expect(
+      loadEnvConfig({ env: { CURSOR_BRIDGE_CONTEXT_PREAMBLE: "false" } })
+        .contextPreamble,
+    ).toBe(false);
+  });
+
+  it("loads CURSOR_BRIDGE_CONTEXT_EXTRA", () => {
+    expect(loadEnvConfig({ env: {} }).contextExtra).toBeUndefined();
+    expect(
+      loadEnvConfig({
+        env: { CURSOR_BRIDGE_CONTEXT_EXTRA: "note" },
+      }).contextExtra,
+    ).toBe("note");
+  });
+
+  it("truncates CURSOR_BRIDGE_CONTEXT_EXTRA", () => {
+    const long = "a".repeat(2500);
+    const extra = loadEnvConfig({
+      env: { CURSOR_BRIDGE_CONTEXT_EXTRA: long },
+    }).contextExtra;
+    expect(extra!.length).toBe(400);
+    expect(extra!.endsWith("…")).toBe(true);
   });
 
   it("parses CURSOR_BRIDGE_PROMPT_VIA_STDIN and CURSOR_BRIDGE_USE_ACP", () => {

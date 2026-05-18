@@ -7,6 +7,9 @@
   "files": [
     "dist",
     "!dist/**/*.test.*",
+    "public",
+    "docs",
+    "scripts/cursor-api-proxy",
     "package.json"
   ],
   "main": "./dist/client.js",

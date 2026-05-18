@@ -1,7 +1,9 @@
 import * as http from "node:http";
 import * as https from "node:https";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { startBridgeServer } from "./server.js";
+import { appendSessionLine } from "./request-log.js";
 import type { BridgeConfig } from "./config.js";
 
 vi.mock("./cursor-cli.js", () => ({
@@ -73,6 +75,8 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     configDirs: overrides.configDirs ?? [],
     multiPort: overrides.multiPort ?? false,
     winCmdlineMax: 30_000,
+    contextPreamble: true,
+    bridgePackageVersion: "0.0.0-test",
     ...overrides,
   };
 }
@@ -172,6 +176,111 @@ describe("startBridgeServer", () => {
     expect(status).toBe(401);
     const data = JSON.parse(body);
     expect(data.error.message).toBe("Invalid API key");
+  });
+
+  it("GET /healthz bypasses requiredKey", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/healthz");
+    expect(status).toBe(200);
+    expect(body).toBe("ok\n");
+  });
+
+  it("serves dashboard GET / without Authorization when requiredKey is set", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/");
+    expect(status).toBe(200);
+    expect(body).toContain("cursor-api-proxy");
+  });
+
+  it("does not append session logs for dashboard /api/status and /api/log polling", async () => {
+    const appendSessionLineMock = vi.mocked(appendSessionLine);
+    appendSessionLineMock.mockClear();
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const statusRes = await fetchServer(servers[0], "/api/status");
+    expect(statusRes.status).toBe(200);
+
+    const logRes = await fetchServer(servers[0], "/api/log");
+    expect(logRes.status).toBe(200);
+
+    // finish handlers run after response completion; flush microtasks before assert.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(appendSessionLineMock).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/log/clear archives and truncates sessions log", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    // Ensure starting state.
+    try {
+      fs.unlinkSync(tmpLogPath);
+    } catch {
+      /* ignore */
+    }
+    fs.writeFileSync(
+      tmpLogPath,
+      [
+        `${new Date("2026-01-01T00:00:00.000Z").toISOString()} GET /v1/chat/completions ::1 200`,
+        `${new Date("2026-01-01T00:00:01.000Z").toISOString()} GET /health ::1 200`,
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/api/log/clear", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(status).toBe(200);
+    const data = JSON.parse(body);
+    expect(typeof data.archivePath).toBe("string");
+    expect(fs.existsSync(data.archivePath)).toBe(true);
+
+    const archived = fs.readFileSync(data.archivePath, "utf8");
+    expect(archived).toContain("GET /v1/chat/completions");
+
+    const live = fs.readFileSync(tmpLogPath, "utf8");
+    expect(live).toBe("");
+
+    // Clean up archive so other tests won't see it.
+    try {
+      fs.unlinkSync(data.archivePath);
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      fs.unlinkSync(tmpLogPath);
+    } catch {
+      /* ignore */
+    }
   });
 
   it("returns 200 when requiredKey matches Authorization", async () => {

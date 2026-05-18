@@ -1,5 +1,6 @@
 import type { AgentCommand } from "./env.js";
 import { resolveAgentCommand, type EnvOptions } from "./env.js";
+import { BRIDGE_AGENT_PROMPT_SEPARATOR } from "./bridge-context-preamble.js";
 
 /** Shown at the start of the prompt when earlier text was dropped on Windows. */
 export const WIN_PROMPT_OMISSION_PREFIX =
@@ -92,6 +93,40 @@ export function fitPromptToWinCmdline(
       originalLength: prompt.length,
       finalPromptLength: prompt.length,
     };
+  }
+
+  const sep = BRIDGE_AGENT_PROMPT_SEPARATOR;
+  const sepIdx = prompt.indexOf(sep);
+  if (sepIdx > 0 && sepIdx + sep.length < prompt.length) {
+    const preamble = prompt.slice(0, sepIdx);
+    const body = prompt.slice(sepIdx + sep.length);
+    const innerPrefix = WIN_PROMPT_OMISSION_PREFIX;
+    const head = preamble + sep + innerPrefix;
+    if (measured(head) <= maxCmdline) {
+      let lo = 0;
+      let hi = body.length;
+      let best = 0;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const tail = mid === 0 ? "" : body.slice(-mid);
+        const candidate = head + tail;
+        if (measured(candidate) <= maxCmdline) {
+          best = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      const finalPrompt =
+        best === 0 ? head : head + body.slice(-best);
+      return {
+        ok: true,
+        args: [...fixedArgs, finalPrompt],
+        truncated: true,
+        originalLength: prompt.length,
+        finalPromptLength: finalPrompt.length,
+      };
+    }
   }
 
   const prefix = WIN_PROMPT_OMISSION_PREFIX;

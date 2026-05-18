@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentCommand } from "./env.js";
+import { BRIDGE_AGENT_PROMPT_SEPARATOR } from "./bridge-context-preamble.js";
 import {
   estimateCmdlineLength,
   fitPromptToWinCmdline,
@@ -75,6 +76,27 @@ describe("fitPromptToWinCmdline", () => {
     expect(last.length).toBeLessThan(prompt.length);
     expect(last.startsWith(WIN_PROMPT_OMISSION_PREFIX)).toBe(true);
     expect(last.endsWith("y")).toBe(true);
+  });
+
+  it("on Windows, keeps bridge preamble when using bridge separator", () => {
+    const preamble = "[cursor-api-proxy]\nstub";
+    const body = "z".repeat(80_000);
+    const prompt = `${preamble}${BRIDGE_AGENT_PROMPT_SEPARATOR}${body}`;
+    const fit = fitPromptToWinCmdline("agent", fixedArgs, prompt, {
+      maxCmdline: 12_000,
+      platform: "win32",
+      cwd: "/tmp/ws",
+      env: {},
+    });
+    expect(fit.ok).toBe(true);
+    if (!fit.ok) throw new Error("expected ok");
+    expect(fit.truncated).toBe(true);
+    const last = fit.args[fit.args.length - 1]!;
+    expect(last.startsWith(preamble + BRIDGE_AGENT_PROMPT_SEPARATOR)).toBe(
+      true,
+    );
+    expect(last).toContain(WIN_PROMPT_OMISSION_PREFIX);
+    expect(last.endsWith("z")).toBe(true);
   });
 
   it("does not truncate when prompt fits", () => {

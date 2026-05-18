@@ -181,6 +181,9 @@ export function appendSessionLine(
   remoteAddress: string,
   statusCode: number,
 ): void {
+  if (pathname === "/api/log" || pathname === "/api/status") {
+    return;
+  }
   const line = `${new Date().toISOString()} ${method} ${pathname} ${remoteAddress} ${statusCode}\n`;
   try {
     const dir = path.dirname(logPath);
