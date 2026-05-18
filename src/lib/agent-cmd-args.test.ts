@@ -35,7 +35,7 @@ function cfg(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 }
 
 describe("buildAgentFixedArgs", () => {
-  it("passes --mode and --trust when effectiveChatOnly", () => {
+  it("omits --mode when mode is agent (cursor-agent default)", () => {
     const args = buildAgentFixedArgs(
       cfg(),
       "/ws",
@@ -44,9 +44,35 @@ describe("buildAgentFixedArgs", () => {
       "agent",
       true,
     );
-    expect(args).toContain("--mode");
-    expect(args[args.indexOf("--mode") + 1]).toBe("agent");
+    // cursor-agent rejects `--mode agent`; agent is its default behavior.
+    expect(args).not.toContain("--mode");
     expect(args).toContain("--trust");
+  });
+
+  it("passes --mode ask when mode is ask", () => {
+    const args = buildAgentFixedArgs(
+      cfg(),
+      "/ws",
+      "gpt-5",
+      false,
+      "ask",
+      true,
+    );
+    expect(args).toContain("--mode");
+    expect(args[args.indexOf("--mode") + 1]).toBe("ask");
+  });
+
+  it("passes --mode plan when mode is plan", () => {
+    const args = buildAgentFixedArgs(
+      cfg(),
+      "/ws",
+      "gpt-5",
+      false,
+      "plan",
+      true,
+    );
+    expect(args).toContain("--mode");
+    expect(args[args.indexOf("--mode") + 1]).toBe("plan");
   });
 
   it("omits --trust when not effectiveChatOnly", () => {

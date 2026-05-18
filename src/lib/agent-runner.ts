@@ -28,6 +28,8 @@ function acpArgsWithModel(acpArgs: string[], model: string): string[] {
 function acpArgsWithMode(acpArgs: string[], mode: CursorExecutionMode): string[] {
   const i = acpArgs.indexOf("acp");
   if (i === -1) return acpArgs;
+  // cursor-agent only accepts --mode plan|ask; agent mode is the default.
+  if (mode === "agent") return acpArgs;
   return [...acpArgs.slice(0, i + 1), "--mode", mode, ...acpArgs.slice(i + 1)];
 }
 

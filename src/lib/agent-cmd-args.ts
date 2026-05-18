@@ -16,7 +16,11 @@ export function buildAgentFixedArgs(
   if (config.approveMcps) args.push("--approve-mcps");
   if (config.force) args.push("--force");
   if (effectiveChatOnly) args.push("--trust");
-  args.push("--mode", mode);
+  // cursor-agent only accepts --mode plan|ask; agent mode is the default
+  // and rejects --mode agent with "argument 'agent' is invalid".
+  if (mode !== "agent") {
+    args.push("--mode", mode);
+  }
   args.push("--workspace", workspaceDir);
   args.push("--model", model);
   if (stream) {
