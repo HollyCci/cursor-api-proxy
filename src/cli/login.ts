@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { launch as launchChrome } from "chrome-launcher";
 
-import { loadEnvConfig } from "../lib/env.js";
+import { loadEnvConfig, resolveAgentCommand } from "../lib/env.js";
 import { ACCOUNTS_DIR } from "./constants.js";
 import { readKeychainToken, writeCachedToken } from "./usage.js";
 
@@ -84,13 +84,15 @@ export async function handleLogin(
       }
     };
 
-    const child = spawn(envCfg.agentBin, ["login"], {
+    const resolved = resolveAgentCommand(envCfg.agentBin, ["login"]);
+    const child = spawn(resolved.command, resolved.args, {
       stdio: ["inherit", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...resolved.env,
         CURSOR_CONFIG_DIR: configDir,
         NO_OPEN_BROWSER: "1",
       },
+      windowsVerbatimArguments: resolved.windowsVerbatimArguments,
     });
 
     // Remove all signal handlers once the child exits (success or failure)
