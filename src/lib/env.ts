@@ -181,6 +181,69 @@ function findLatestVersionDir(dir: string): string | undefined {
   return path.join(versionsDir, versionDirs[0]!.name);
 }
 
+function configDirFromAgentDir(dir: string): string | undefined {
+  const configDir = path.join(dir, "..", "data", "config");
+  return fs.existsSync(path.join(configDir, "cli-config.json"))
+    ? configDir
+    : undefined;
+}
+
+function resolveCmdShim(
+  cmdPath: string,
+  args: string[],
+  env: EnvSource,
+  nodeOverride?: string,
+): AgentCommand | undefined {
+  const dir = path.dirname(cmdPath);
+  const nodeBin = path.join(dir, "node.exe");
+  const script = path.join(dir, "index.js");
+  if (fs.existsSync(script) && (nodeOverride || fs.existsSync(nodeBin))) {
+    return {
+      command: nodeOverride ?? nodeBin,
+      args: [script, ...args],
+      env: { ...env, CURSOR_INVOKED_AS: "agent.cmd" },
+      agentScriptPath: script,
+      configDir: configDirFromAgentDir(dir),
+    };
+  }
+  const versionDir = findLatestVersionDir(dir);
+  if (versionDir) {
+    const versionNode = path.join(versionDir, "node.exe");
+    const versionScript = path.join(versionDir, "index.js");
+    if (
+      fs.existsSync(versionScript) &&
+      (nodeOverride || fs.existsSync(versionNode))
+    ) {
+      return {
+        command: nodeOverride ?? versionNode,
+        args: [versionScript, ...args],
+        env: { ...env, CURSOR_INVOKED_AS: "agent.cmd" },
+        agentScriptPath: versionScript,
+        configDir: configDirFromAgentDir(dir),
+      };
+    }
+  }
+  return undefined;
+}
+
+function resolveCmdFallback(
+  cmd: string,
+  args: string[],
+  env: EnvSource,
+  shell: string,
+): AgentCommand {
+  const quotedArgs = args
+    .map((arg) => (arg.includes(" ") ? `"${arg}"` : arg))
+    .join(" ");
+  const cmdLine = `""${cmd}" ${quotedArgs}"`;
+  return {
+    command: shell,
+    args: ["/d", "/s", "/c", cmdLine],
+    env,
+    windowsVerbatimArguments: true,
+  };
+}
+
 /**
  * Auto-discovers configuration directories located inside ~/.cursor-api-proxy/accounts/
  */
@@ -344,64 +407,37 @@ export function resolveAgentCommand(
       const agentScriptPath = path.isAbsolute(loaded.agentScript)
         ? loaded.agentScript
         : path.resolve(cwd, loaded.agentScript);
+      if (/\.cmd$/i.test(loaded.agentScript)) {
+        const resolved = resolveCmdShim(
+          agentScriptPath,
+          args,
+          env,
+          loaded.agentNode,
+        );
+        if (resolved) return resolved;
+        return resolveCmdFallback(
+          loaded.agentScript,
+          args,
+          env,
+          loaded.commandShell,
+        );
+      }
       const agentDir = path.dirname(agentScriptPath);
-      const configDir = path.join(agentDir, "..", "data", "config");
       const out: AgentCommand = {
         command: loaded.agentNode,
         args: [loaded.agentScript, ...args],
         env: { ...env, CURSOR_INVOKED_AS: "agent.cmd" },
         agentScriptPath,
-        configDir: fs.existsSync(path.join(configDir, "cli-config.json"))
-          ? configDir
-          : undefined,
+        configDir: configDirFromAgentDir(agentDir),
       };
       return out;
     }
 
     if (/\.cmd$/i.test(cmd)) {
       const cmdResolved = path.resolve(cwd, cmd);
-      const dir = path.dirname(cmdResolved);
-      const nodeBin = path.join(dir, "node.exe");
-      const script = path.join(dir, "index.js");
-      if (fs.existsSync(nodeBin) && fs.existsSync(script)) {
-        const configDir = path.join(dir, "..", "data", "config");
-        return {
-          command: nodeBin,
-          args: [script, ...args],
-          env: { ...env, CURSOR_INVOKED_AS: "agent.cmd" },
-          agentScriptPath: script,
-          configDir: fs.existsSync(path.join(configDir, "cli-config.json"))
-            ? configDir
-            : undefined,
-        };
-      }
-      const versionDir = findLatestVersionDir(dir);
-      if (versionDir) {
-        const versionNode = path.join(versionDir, "node.exe");
-        const versionScript = path.join(versionDir, "index.js");
-        if (fs.existsSync(versionNode) && fs.existsSync(versionScript)) {
-          const configDir = path.join(dir, "..", "data", "config");
-          return {
-            command: versionNode,
-            args: [versionScript, ...args],
-            env: { ...env, CURSOR_INVOKED_AS: "agent.cmd" },
-            agentScriptPath: versionScript,
-            configDir: fs.existsSync(path.join(configDir, "cli-config.json"))
-              ? configDir
-              : undefined,
-          };
-        }
-      }
-      const quotedArgs = args
-        .map((arg) => (arg.includes(" ") ? `"${arg}"` : arg))
-        .join(" ");
-      const cmdLine = `""${cmd}" ${quotedArgs}"`;
-      return {
-        command: loaded.commandShell,
-        args: ["/d", "/s", "/c", cmdLine],
-        env,
-        windowsVerbatimArguments: true,
-      };
+      const resolved = resolveCmdShim(cmdResolved, args, env);
+      if (resolved) return resolved;
+      return resolveCmdFallback(cmd, args, env, loaded.commandShell);
     }
   }
 

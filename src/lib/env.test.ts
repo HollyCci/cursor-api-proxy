@@ -406,6 +406,36 @@ describe("resolveAgentCommand", () => {
     expect(command.windowsVerbatimArguments).toBeUndefined();
   });
 
+  it("uses CURSOR_AGENT_SCRIPT .cmd as a shim when CURSOR_AGENT_NODE is set", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-agent-"));
+    try {
+      const agentCmd = path.join(tmp, "cursor-agent.CMD");
+      const versionDir = path.join(tmp, "versions", "2026.03.26-abcdef0");
+      fs.mkdirSync(versionDir, { recursive: true });
+      fs.writeFileSync(agentCmd, "@echo off\r\n");
+      fs.writeFileSync(path.join(versionDir, "index.js"), "");
+
+      const command = resolveAgentCommand("agent.cmd", ["--print", "hello"], {
+        platform: "win32",
+        env: {
+          CURSOR_AGENT_NODE: "D:\\Applications\\nodejs\\node.exe",
+          CURSOR_AGENT_SCRIPT: agentCmd,
+        },
+      });
+
+      expect(command.command).toBe("D:\\Applications\\nodejs\\node.exe");
+      expect(command.args).toEqual([
+        path.join(versionDir, "index.js"),
+        "--print",
+        "hello",
+      ]);
+      expect(command.env.CURSOR_INVOKED_AS).toBe("agent.cmd");
+      expect(command.windowsVerbatimArguments).toBeUndefined();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("uses COMSPEC for .cmd invocations on Windows when direct node launch is unavailable", () => {
     const command = resolveAgentCommand(
       "C:\\cursor\\agent.cmd",
