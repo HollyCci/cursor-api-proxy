@@ -58,4 +58,18 @@ describe("parseCursorCliModels", () => {
     const models = parseCursorCliModels(output);
     expect(models).toEqual([{ id: "org/models/claude-3:latest", name: "Claude 3" }]);
   });
+
+  it("strips ANSI color codes from FORCE_COLOR output", () => {
+    const output = [
+      "\u001b[2mAvailable models\u001b[22m",
+      "",
+      "\u001b[36mauto\u001b[39m \u001b[2m- Auto\u001b[22m\u001b[2m (default)\u001b[22m",
+      "\u001b[36mgpt-5.3-codex\u001b[39m \u001b[2m- Codex 5.3\u001b[22m",
+    ].join("\n");
+    const models = parseCursorCliModels(output);
+    expect(models).toEqual([
+      { id: "auto", name: "Auto" },
+      { id: "gpt-5.3-codex", name: "Codex 5.3" },
+    ]);
+  });
 });

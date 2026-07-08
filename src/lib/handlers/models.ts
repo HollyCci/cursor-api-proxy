@@ -35,7 +35,11 @@ export async function getCachedCursorModels(
         timeoutMs: 60_000,
       }).then(
         (models) => {
-          modelCacheRef.current = { at: Date.now(), models };
+          // Never cache an empty catalog — usually a parse/env glitch
+          // (e.g. colored CLI output) and would poison /v1/models for TTL.
+          if (models.length > 0) {
+            modelCacheRef.current = { at: Date.now(), models };
+          }
           modelCacheRef.inflight = undefined;
           return models;
         },
