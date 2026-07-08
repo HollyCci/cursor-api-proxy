@@ -4,8 +4,17 @@ import { run } from "./process.js";
 
 export type CursorCliModel = { id: string; name: string };
 
+/** Strip CSI / OSC ANSI sequences so colored CLI output still parses. */
+export function stripAnsi(text: string): string {
+  return text
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
+}
+
 export function parseCursorCliModels(output: string): CursorCliModel[] {
-  const lines = output.split(/\r?\n/g).map((l) => l.trim());
+  const lines = stripAnsi(output)
+    .split(/\r?\n/g)
+    .map((l) => l.trim());
   const models: CursorCliModel[] = [];
 
   for (const line of lines) {
@@ -26,9 +35,16 @@ export async function listCursorCliModels(args: {
   agentBin: string;
   timeoutMs: number;
 }): Promise<CursorCliModel[]> {
+  // Parent shells (Cursor agent, CI) often set FORCE_COLOR=1; that paints
+  // `--list-models` with ANSI and used to yield an empty OpenAI model list.
   const list = await run(args.agentBin, ["--list-models"], {
     cwd: tmpdir(),
     timeoutMs: args.timeoutMs,
+    envOverrides: {
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+      TERM: "dumb",
+    },
   });
 
   if (list.code !== 0) {
