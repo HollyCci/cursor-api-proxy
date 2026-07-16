@@ -33,6 +33,7 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     multiPort: false,
     winCmdlineMax: 30_000,
     contextPreamble: true,
+    toolCalls: false,
     bridgePackageVersion: "0.0.0-test",
     ...overrides,
   };

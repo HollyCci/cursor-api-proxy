@@ -62,6 +62,8 @@ export type LoadedEnv = {
    * From `CURSOR_BRIDGE_CONTEXT_EXTRA`; stripped of NUL, max 400 UTF-16 units.
    */
   contextExtra?: string;
+  /** Convert textual Cursor function requests into OpenAI tool_calls. */
+  toolCalls: boolean;
 };
 
 export type AgentCommand = {
@@ -389,6 +391,7 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     winCmdlineMax,
     contextPreamble,
     contextExtra,
+    toolCalls: envBool(env, ["CURSOR_BRIDGE_TOOL_CALLS"], false),
   };
 }
 

@@ -77,6 +77,7 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
+    toolCalls: false,
     ...overrides,
   };
 }

@@ -28,6 +28,13 @@ describe("loadEnvConfig", () => {
     expect(loaded.promptViaStdin).toBe(false);
     expect(loaded.useAcp).toBe(false);
     expect(loaded.contextPreamble).toBe(true);
+    expect(loaded.toolCalls).toBe(false);
+  });
+
+  it("parses CURSOR_BRIDGE_TOOL_CALLS", () => {
+    expect(
+      loadEnvConfig({ env: { CURSOR_BRIDGE_TOOL_CALLS: "true" } }).toolCalls,
+    ).toBe(true);
   });
 
   it("applies env aliases with expected precedence", () => {

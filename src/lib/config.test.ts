@@ -24,6 +24,7 @@ describe("loadBridgeConfig", () => {
     expect(config.contextPreamble).toBe(true);
     expect(config.bridgePackageVersion).toMatch(/^\d+\.\d+\.\d+/);
     expect(config.contextExtra).toBeUndefined();
+    expect(config.toolCalls).toBe(false);
   });
 
   it("assembles config from the centralized env layer", () => {
@@ -43,6 +44,7 @@ describe("loadBridgeConfig", () => {
         CURSOR_BRIDGE_VERBOSE: "1",
         CURSOR_BRIDGE_TLS_CERT: "./certs/test.crt",
         CURSOR_BRIDGE_TLS_KEY: "./certs/test.key",
+        CURSOR_BRIDGE_TOOL_CALLS: "true",
       },
       cwd: "/tmp/project",
     });
@@ -67,6 +69,7 @@ describe("loadBridgeConfig", () => {
     expect(config.tlsKeyPath).toBe(
       path.resolve("/tmp/project", "./certs/test.key"),
     );
+    expect(config.toolCalls).toBe(true);
   });
 
   it("sets acpSkipAuthenticate and acpEnv when CURSOR_API_KEY is set", () => {

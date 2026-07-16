@@ -234,6 +234,7 @@ function sanitizedBridgeConfig(config: BridgeConfig): Record<string, unknown> {
     contextPreamble: config.contextPreamble,
     bridgePackageVersion: config.bridgePackageVersion,
     contextExtraConfigured: Boolean(config.contextExtra),
+    toolCalls: config.toolCalls,
   };
 }
 
