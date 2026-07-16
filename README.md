@@ -193,6 +193,7 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_MULTI_PORT` | `false` | When `true` and multiple config dirs are set, spawns a separate server per directory on incrementing ports starting from `CURSOR_BRIDGE_PORT`. |
 | `CURSOR_BRIDGE_PROMPT_VIA_STDIN` | `false` | When `true`, sends the user prompt via **stdin** instead of argv (helps on Windows if argv is truncated). |
 | `CURSOR_BRIDGE_USE_ACP` | `false` | When `true`, uses **ACP (Agent Client Protocol)** over stdio (`agent acp`). Avoids Windows argv limits. See [Cursor ACP docs](https://cursor.com/docs/cli/acp). Set `NODE_DEBUG=cursor-api-proxy:acp` to debug. |
+| `CURSOR_BRIDGE_TOOL_CALLS` | `false` | When enabled, buffers requests containing OpenAI `tools`, converts the first validated Cursor JSON function request into native `tool_calls`, and preserves JSON/SSE semantics from the request's `stream` value. The proxy never executes tools. |
 | `CURSOR_BRIDGE_ACP_SKIP_AUTHENTICATE` | auto | When `CURSOR_API_KEY` is set, skips the ACP authenticate step. Set to `true` to skip when using `agent login` instead. |
 | `CURSOR_BRIDGE_ACP_RAW_DEBUG` | `false` | When `1` or `true`, log raw JSON-RPC from ACP stdout (requires `NODE_DEBUG=cursor-api-proxy:acp`). |
 | `CURSOR_AGENT_BIN` | `agent` | Path to Cursor CLI binary. Alias precedence: `CURSOR_AGENT_BIN`, then `CURSOR_CLI_BIN`, then `CURSOR_CLI_PATH`. |
@@ -301,6 +302,15 @@ node examples/test-stream.mjs
 ```
 
 See [examples/README.md](examples/README.md) for details.
+
+### Tool calls bridge (opt-in)
+
+`CURSOR_BRIDGE_TOOL_CALLS=true` enables compatibility for clients such as
+LibreChat that execute OpenAI tools or MCP functions. Tool-enabled turns are
+buffered, so they do not display token-by-token; requests without tools keep
+incremental streaming. Only tools declared in the current request are accepted,
+and the client remains responsible for execution and sending `role: "tool"`
+results in the next turn.
 
 ## License
 
