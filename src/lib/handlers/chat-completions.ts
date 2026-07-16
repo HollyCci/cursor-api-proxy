@@ -43,9 +43,37 @@ import {
   fitPromptToWinCmdline,
   warnPromptTruncated,
 } from "../win-cmdline-limit.js";
+import {
+  buildBufferedStreamChunks,
+  buildToolBridgeSystemText,
+  containsToolCallCandidate,
+  parseToolCallOutput,
+  resolveAssistantOutput,
+  shouldUseToolBridge,
+} from "../tool-calls.js";
 
 function isRateLimited(stderr: string): boolean {
   return /\b429\b|rate.?limit|too many requests/i.test(stderr);
+}
+
+function usageFor(prompt: string, completion: string) {
+  const prompt_tokens = Math.max(1, Math.round(prompt.length / 4));
+  const completion_tokens = Math.max(1, Math.round(completion.length / 4));
+  return {
+    prompt_tokens,
+    completion_tokens,
+    total_tokens: prompt_tokens + completion_tokens,
+  };
+}
+
+function writeBufferedEvents(
+  res: http.ServerResponse,
+  chunks: object[],
+): void {
+  for (const chunk of chunks) {
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  }
+  res.write("data: [DONE]\n\n");
 }
 
 export type ChatCompletionsCtx = {
@@ -84,7 +112,13 @@ export async function handleChatCompletions(
 
   const cleanMessages = sanitizeMessages(body.messages ?? []);
 
-  const toolsText = toolsToSystemText(body.tools, body.functions);
+  const toolBridgeActive =
+    config.toolCalls && shouldUseToolBridge(body.tools, body.tool_choice);
+  const toolsText = config.toolCalls
+    ? toolBridgeActive
+      ? buildToolBridgeSystemText(body.tools, body.tool_choice)
+      : undefined
+    : toolsToSystemText(body.tools, body.functions);
   const messagesWithTools = toolsText
     ? [{ role: "system", content: toolsText }, ...cleanMessages]
     : cleanMessages;
@@ -202,6 +236,116 @@ export async function handleChatCompletions(
     res.on("error", () => {
       /* client disconnected mid-stream */
     });
+
+    if (toolBridgeActive) {
+      let accumulated = "";
+      const onLine = config.useAcp
+        ? (text: string) => {
+            accumulated += text;
+          }
+        : createStreamParser(
+            (text) => {
+              accumulated += text;
+            },
+            () => {},
+          );
+
+      runAgentStream(
+        config,
+        workspaceDir,
+        effectiveChatOnly,
+        cmdArgs,
+        onLine,
+        tempDir,
+        promptForAgent,
+        configDir,
+        abortController.signal,
+      )
+        .then(({ code, stderr: stderrOut }) => {
+          const latencyMs = Date.now() - streamStart;
+          reportRequestEnd(configDir);
+          if (stderrOut && isRateLimited(stderrOut)) {
+            reportRateLimit(configDir, 60_000);
+          }
+          if (abortController.signal.aborted) {
+            res.end();
+            return;
+          }
+          if (code !== 0) {
+            reportRequestError(configDir, latencyMs);
+            const publicMsg = logAgentError(
+              config.sessionsLogPath,
+              method,
+              pathname,
+              remoteAddress,
+              code,
+              stderrOut,
+            );
+            res.write(
+              `data: ${JSON.stringify({
+                error: { message: publicMsg, code: "cursor_cli_error" },
+              })}\n\n`,
+            );
+            res.write("data: [DONE]\n\n");
+            logAccountStats(config.verbose, getAccountStats());
+            res.end();
+            return;
+          }
+          reportRequestSuccess(configDir, latencyMs);
+          logAccountStats(config.verbose, getAccountStats());
+          logTrafficResponse(
+            config.verbose,
+            model ?? cursorModel,
+            accumulated,
+            true,
+          );
+          if (
+            containsToolCallCandidate(accumulated) &&
+            !parseToolCallOutput(accumulated, body.tools, {
+              toolChoice: body.tool_choice,
+            })
+          ) {
+            console.warn(
+              `[tool-calls] rejected model tool output for ${displayModel ?? "default"}`,
+            );
+          }
+          writeBufferedEvents(
+            res,
+            buildBufferedStreamChunks({
+              id,
+              created,
+              model: displayModel,
+              text: accumulated,
+              tools: body.tools,
+              usage: usageFor(agentPrompt, accumulated),
+              options: { toolChoice: body.tool_choice },
+            }),
+          );
+          res.end();
+        })
+        .catch((err) => {
+          reportRequestEnd(configDir);
+          if (!abortController.signal.aborted) {
+            reportRequestError(configDir, Date.now() - streamStart);
+            res.write(
+              `data: ${JSON.stringify({
+                error: {
+                  message:
+                    "The Cursor agent stream failed. See server logs for details.",
+                  code: "cursor_cli_error",
+                },
+              })}\n\n`,
+            );
+            res.write("data: [DONE]\n\n");
+          }
+          console.error(
+            `[${new Date().toISOString()}] Agent stream error:`,
+            err,
+          );
+          res.end();
+        });
+      return;
+    }
 
     if (config.useAcp && typeof promptForAgent === "string") {
       let accumulated = "";
@@ -457,9 +601,27 @@ export async function handleChatCompletions(
   const content = out.stdout.trim();
   logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
 
-  const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
-  const completionTokens = Math.max(1, Math.round(content.length / 4));
-  const totalTokens = promptTokens + completionTokens;
+  const usage = usageFor(agentPrompt, content);
+  const resolved = toolBridgeActive
+    ? resolveAssistantOutput(content, body.tools, {
+        toolChoice: body.tool_choice,
+      })
+    : { kind: "text" as const, content };
+  if (
+    toolBridgeActive &&
+    resolved.kind === "text" &&
+    containsToolCallCandidate(content)
+  ) {
+    console.warn(
+      `[tool-calls] rejected model tool output for ${displayModel ?? "default"}`,
+    );
+  }
+  const message =
+    resolved.kind === "tool_call"
+      ? { role: "assistant", content: null, tool_calls: [resolved.toolCall] }
+      : { role: "assistant", content: resolved.content };
+  const finishReason =
+    resolved.kind === "tool_call" ? "tool_calls" : "stop";
 
   logAccountStats(config.verbose, getAccountStats());
   json(
@@ -470,18 +632,8 @@ export async function handleChatCompletions(
       object: "chat.completion",
       created,
       model: displayModel,
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content },
-          finish_reason: "stop",
-        },
-      ],
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: totalTokens,
-      },
+      choices: [{ index: 0, message, finish_reason: finishReason }],
+      usage,
     },
     truncatedHeaders,
   );

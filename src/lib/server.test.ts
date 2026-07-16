@@ -5,6 +5,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { startBridgeServer } from "./server.js";
 import { appendSessionLine } from "./request-log.js";
 import type { BridgeConfig } from "./config.js";
+import { run, runStreaming } from "./process.js";
 
 vi.mock("./cursor-cli.js", () => ({
   listCursorCliModels: vi.fn().mockResolvedValue([
@@ -338,6 +339,133 @@ describe("startBridgeServer", () => {
     const data = JSON.parse(body);
     expect(data.object).toBe("chat.completion");
     expect(data.choices[0].message.content).toBe("Hello from agent");
+  });
+
+  it("returns native tool_calls for a bridged non-stream request", async () => {
+    vi.mocked(run).mockResolvedValueOnce({
+      code: 0,
+      stdout:
+        '{"name":"search_messages","arguments":{"keyword":"复习"}}',
+      stderr: "",
+    });
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ toolCalls: true }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", resolve),
+    );
+    const response = await fetchServer(
+      servers[0],
+      "/v1/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-3-opus",
+          messages: [{ role: "user", content: "Search" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "search_messages",
+                description: "Search",
+                parameters: { type: "object" },
+              },
+            },
+          ],
+        }),
+      },
+    );
+    const data = JSON.parse(response.body);
+    expect(data.choices[0].finish_reason).toBe("tool_calls");
+    expect(data.choices[0].message.content).toBeNull();
+    expect(data.choices[0].message.tool_calls[0].function.name).toBe(
+      "search_messages",
+    );
+  });
+
+  it("buffers a bridged stream and emits native tool_calls SSE", async () => {
+    vi.mocked(runStreaming).mockImplementationOnce(
+      async (_cmd, _args, opts) => {
+        opts.onLine(
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              content: [
+                {
+                  type: "text",
+                  text: '{"name":"search_messages","arguments":{"keyword":"复习"}}',
+                },
+              ],
+            },
+          }),
+        );
+        opts.onLine(JSON.stringify({ type: "result", subtype: "success" }));
+        return { code: 0, stderr: "" };
+      },
+    );
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ toolCalls: true }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", resolve),
+    );
+    const response = await fetchServer(
+      servers[0],
+      "/v1/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-3-opus",
+          stream: true,
+          messages: [{ role: "user", content: "Search" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "search_messages",
+                parameters: { type: "object" },
+              },
+            },
+          ],
+        }),
+      },
+    );
+    const events = response.body
+      .split("\n")
+      .filter((line) => line.startsWith("data: {"))
+      .map((line) => JSON.parse(line.slice(6)));
+    expect(events[0].choices[0].delta.tool_calls[0].function.name).toBe(
+      "search_messages",
+    );
+    expect(events[1].choices[0].finish_reason).toBe("tool_calls");
+    expect(response.body).toContain("data: [DONE]");
+    expect(response.body).not.toContain('delta":{"content"');
+  });
+
+  it("keeps incremental streaming when the bridge is inactive", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ toolCalls: true }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", resolve),
+    );
+    const response = await fetchServer(
+      servers[0],
+      "/v1/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-3-opus",
+          stream: true,
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      },
+    );
+    expect(response.body).toContain('"delta":{"content":"Hello"}');
+    expect(response.body).toContain('"finish_reason":"stop"');
   });
 
   it("returns display model when request is default and defaultModel is set", async () => {
