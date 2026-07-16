@@ -135,6 +135,56 @@ describe("buildPromptFromMessages", () => {
     const prompt = buildPromptFromMessages(messages);
     expect(prompt).toBe("User: Hello\n\nAssistant:");
   });
+
+  it("serialises assistant tool calls even when content is null", () => {
+    const prompt = buildPromptFromMessages([
+      { role: "user", content: "Search for feedback" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: {
+              name: "search_messages",
+              arguments: '{"keyword":"复习"}',
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_1",
+        name: "search_messages",
+        content: '{"items":[{"text":"复习太难"}]}',
+      },
+    ]);
+    expect(prompt).toContain(
+      'Assistant requested tool search_messages (call_1) with arguments: {"keyword":"复习"}',
+    );
+    expect(prompt).toContain(
+      'Tool result for search_messages (call_1): {"items":[{"text":"复习太难"}]}',
+    );
+  });
+
+  it("keeps assistant text alongside tool calls", () => {
+    const prompt = buildPromptFromMessages([
+      {
+        role: "assistant",
+        content: "I will search.",
+        tool_calls: [
+          {
+            id: "call_2",
+            type: "function",
+            function: { name: "search_messages", arguments: "{}" },
+          },
+        ],
+      },
+    ]);
+    expect(prompt).toContain("Assistant: I will search.");
+    expect(prompt).toContain("Assistant requested tool search_messages");
+  });
 });
 
 describe("toolsToSystemText", () => {

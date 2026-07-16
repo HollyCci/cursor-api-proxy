@@ -95,6 +95,38 @@ export function buildPromptFromMessages(messages: any[]): string {
   for (const m of messages || []) {
     const role = m?.role;
     const text = messageContentToText(m?.content);
+
+    if (role === "assistant" && Array.isArray(m?.tool_calls)) {
+      if (text) convo.push(`Assistant: ${text}`);
+      for (const call of m.tool_calls) {
+        const name = call?.function?.name;
+        const args = call?.function?.arguments;
+        if (typeof name !== "string") continue;
+        const id =
+          typeof call?.id === "string" && call.id ? ` (${call.id})` : "";
+        convo.push(
+          `Assistant requested tool ${name}${id} with arguments: ${
+            typeof args === "string" ? args : JSON.stringify(args ?? {})
+          }`,
+        );
+      }
+      continue;
+    }
+
+    if (role === "tool") {
+      if (!text) continue;
+      const name =
+        typeof m?.name === "string" && m.name ? ` ${m.name}` : "";
+      const id =
+        typeof m?.tool_call_id === "string" && m.tool_call_id
+          ? ` (${m.tool_call_id})`
+          : "";
+      convo.push(
+        name || id ? `Tool result for${name}${id}: ${text}` : `Tool: ${text}`,
+      );
+      continue;
+    }
+
     if (!text) continue;
 
     if (role === "system" || role === "developer") {
@@ -109,7 +141,7 @@ export function buildPromptFromMessages(messages: any[]): string {
       convo.push(`Assistant: ${text}`);
       continue;
     }
-    if (role === "tool" || role === "function") {
+    if (role === "function") {
       convo.push(`Tool: ${text}`);
       continue;
     }
