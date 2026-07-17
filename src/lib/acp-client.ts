@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { debuglog } from "node:util";
 
 import { trackChildProcess } from "./process.js";
+import { createAgentLatencyBag } from "./latency-waterfall.js";
 
 const debugAcp = debuglog("cursor-api-proxy:acp");
 
@@ -34,11 +35,14 @@ export type AcpSyncResult = {
   code: number;
   stdout: string;
   stderr: string;
+  /** Absolute performance.now() marks for waterfall merge. */
+  latencyMarks?: Record<string, number>;
 };
 
 export type AcpStreamResult = {
   code: number;
   stderr: string;
+  latencyMarks?: Record<string, number>;
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -274,14 +278,17 @@ export function runAcpSync(
   opts: AcpRunOptions,
 ): Promise<AcpSyncResult> {
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const latency = createAgentLatencyBag();
 
   return new Promise((resolve, reject) => {
+    latency.mark("spawn_start");
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: buildAcpSpawnEnv(opts.env),
       stdio: ["pipe", "pipe", "pipe"],
       windowsVerbatimArguments: opts.spawnOptions?.windowsVerbatimArguments,
     });
+    latency.mark("spawn_ready");
 
     trackChildProcess(child);
 
@@ -321,6 +328,7 @@ export function runAcpSync(
         code,
         stdout: accumulated.trim(),
         stderr: stderr.trim(),
+        latencyMarks: latency.absoluteMarks(),
       });
     };
 
@@ -367,6 +375,7 @@ export function runAcpSync(
           rawDebug: opts.rawDebug,
           stdin: child.stdin,
           onAgentTextChunk: (text) => {
+            latency.mark("model_first_byte");
             accumulated += text;
           },
         });
@@ -454,11 +463,13 @@ export function runAcpSync(
           }
         }
 
+        latency.mark("session_ready");
         debugAcp("ACP step: session/prompt");
         await sendRequest(child.stdin, nextId, "session/prompt", {
           sessionId,
           prompt: [{ type: "text", text: prompt }],
         }, pending, requestTimeoutMs);
+        latency.mark("model_complete");
         if (accumulated.length === 0) {
           debugAcp("ACP sync: no content accumulated; stderr tail: %s", stderr.slice(-500));
         }
@@ -486,14 +497,17 @@ export function runAcpStream(
   onChunk: (text: string) => void,
 ): Promise<AcpStreamResult> {
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const latency = createAgentLatencyBag();
 
   return new Promise((resolve, reject) => {
+    latency.mark("spawn_start");
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: buildAcpSpawnEnv(opts.env),
       stdio: ["pipe", "pipe", "pipe"],
       windowsVerbatimArguments: opts.spawnOptions?.windowsVerbatimArguments,
     });
+    latency.mark("spawn_ready");
 
     trackChildProcess(child);
 
@@ -528,7 +542,11 @@ export function runAcpStream(
       } catch {
         /* ignore */
       }
-      resolve({ code, stderr: stderr.trim() });
+      resolve({
+        code,
+        stderr: stderr.trim(),
+        latencyMarks: latency.absoluteMarks(),
+      });
     };
 
     const timeout =
@@ -571,7 +589,10 @@ export function runAcpStream(
         handleAcpNotification(msg, {
           rawDebug: opts.rawDebug,
           stdin: child.stdin,
-          onAgentTextChunk: onChunk,
+          onAgentTextChunk: (text) => {
+            latency.mark("model_first_byte");
+            onChunk(text);
+          },
         });
       } catch {
         /* ignore notification handler errors */
@@ -657,11 +678,13 @@ export function runAcpStream(
           }
         }
 
+        latency.mark("session_ready");
         debugAcp("ACP step: session/prompt");
         await sendRequest(child.stdin, nextId, "session/prompt", {
           sessionId,
           prompt: [{ type: "text", text: prompt }],
         }, pending, requestTimeoutMs);
+        latency.mark("model_complete");
         finish(0);
       } catch {
         if (timeout) clearTimeout(timeout);

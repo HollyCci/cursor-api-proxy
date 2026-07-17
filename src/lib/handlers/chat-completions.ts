@@ -51,6 +51,7 @@ import {
   resolveAssistantOutput,
   shouldUseToolBridge,
 } from "../tool-calls.js";
+import { LatencyWaterfall } from "../latency-waterfall.js";
 
 function isRateLimited(stderr: string): boolean {
   return /\b429\b|rate.?limit|too many requests/i.test(stderr);
@@ -91,6 +92,7 @@ export async function handleChatCompletions(
   pathname: string,
   remoteAddress: string,
 ): Promise<void> {
+  const latency = new LatencyWaterfall();
   const { config, lastRequestedModelRef, modelCacheRef } = ctx;
   const body = JSON.parse(rawBody || "{}") as OpenAiChatCompletionRequest;
   const requested = normalizeModelId(body.model);
@@ -555,7 +557,10 @@ export async function handleChatCompletions(
     return;
   }
 
+  latency.mark("exec_start");
+  latency.mark("account_select_start");
   const configDir = getNextAccountConfigDir();
+  latency.mark("account_select_end");
   logAccountAssigned(configDir);
   reportRequestStart(configDir);
   const syncStart = Date.now();
@@ -563,6 +568,7 @@ export async function handleChatCompletions(
   const abortController = new AbortController();
   req.once("close", () => abortController.abort());
 
+  latency.mark("spawn_start");
   const out = await runAgentSync(
     config,
     workspaceDir,
@@ -573,6 +579,7 @@ export async function handleChatCompletions(
     configDir,
     abortController.signal,
   );
+  latency.mergeAgentMarks(out.latencyMarks);
   const syncLatency = Date.now() - syncStart;
   reportRequestEnd(configDir);
 
@@ -591,13 +598,26 @@ export async function handleChatCompletions(
       out.code,
       out.stderr,
     );
-    json(res, 500, {
-      error: { message: errMsg, code: "cursor_cli_error" },
-    });
+    latency.mark("shape_done");
+    latency.logLine({ ok: false, model: displayModel });
+    json(
+      res,
+      500,
+      {
+        error: { message: errMsg, code: "cursor_cli_error" },
+      },
+      {
+        ...truncatedHeaders,
+        "X-Cursor-Proxy-Waterfall": latency.headerValue(),
+      },
+    );
     return;
   }
 
   reportRequestSuccess(configDir, syncLatency);
+  if (!latency.has("model_complete")) {
+    latency.mark("model_complete");
+  }
   const content = out.stdout.trim();
   logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
 
@@ -623,6 +643,21 @@ export async function handleChatCompletions(
   const finishReason =
     resolved.kind === "tool_call" ? "tool_calls" : "stop";
 
+  latency.mark("shape_done");
+  latency.logLine({
+    ok: true,
+    model: displayModel,
+    pool_hit: !!out.poolHit,
+    prompt_dispatch_ms:
+      out.latencyMarks?.prompt_dispatched != null &&
+      out.latencyMarks?.prompt_dispatch_start != null
+        ? Math.round(
+            (out.latencyMarks.prompt_dispatched -
+              out.latencyMarks.prompt_dispatch_start) *
+              10,
+          ) / 10
+        : undefined,
+  });
   logAccountStats(config.verbose, getAccountStats());
   json(
     res,
@@ -635,6 +670,9 @@ export async function handleChatCompletions(
       choices: [{ index: 0, message, finish_reason: finishReason }],
       usage,
     },
-    truncatedHeaders,
+    {
+      ...truncatedHeaders,
+      "X-Cursor-Proxy-Waterfall": latency.headerValue(),
+    },
   );
 }

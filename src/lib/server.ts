@@ -6,6 +6,16 @@ import type { BridgeConfig } from "./config.js";
 import { createRequestListener } from "./request-listener.js";
 import { initAccountPool } from "./account-pool.js";
 import { killAllChildProcesses } from "./process.js";
+import {
+  getSessionPool,
+  initSessionPool,
+  poolAccountKey,
+  shutdownSessionPool,
+} from "./acp-session-pool.js";
+import { getChatOnlyEnvOverrides } from "./workspace.js";
+import * as path from "node:path";
+import * as os from "node:os";
+import { createHash } from "node:crypto";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -38,6 +48,7 @@ export function startBridgeServer(
             multiPort: false, // Disable multi-port for child servers to prevent recursion
           },
         };
+        maybeInitSessionPool(serverOpts.config);
         const server = startSingleServer(serverOpts);
         servers.push(server);
       });
@@ -47,8 +58,49 @@ export function startBridgeServer(
     }
   }
 
+  maybeInitSessionPool(config);
   servers.push(startSingleServer(opts));
   return servers;
+}
+
+function maybeInitSessionPool(config: BridgeConfig): void {
+  if (!config.sessionPool) return;
+  if (getSessionPool()?.enabled) return;
+  const model =
+    config.defaultModel === "default" ? undefined : config.defaultModel;
+  initSessionPool({
+    enabled: true,
+    minIdle: config.sessionPoolMinIdle,
+    maxSessions: config.sessionPoolMaxSessions,
+    idleTtlMs: config.sessionPoolIdleTtlMs,
+    command: config.acpCommand,
+    args: config.acpArgs,
+    env: config.acpEnv,
+    spawnOptions: config.acpSpawnOptions,
+    skipAuthenticate: config.acpSkipAuthenticate,
+    defaultModel: model,
+    resolveAccountEnv: (accountKey) => {
+      // Isolate rules via empty HOME under a per-account hash dir; auth via config dir.
+      const hash = createHash("sha256")
+        .update(accountKey)
+        .digest("hex")
+        .slice(0, 16);
+      const home = path.join(os.tmpdir(), "cursor-api-proxy-pool-home", hash);
+      fs.mkdirSync(home, { recursive: true });
+      if (accountKey === "default") {
+        return getChatOnlyEnvOverrides(home);
+      }
+      return getChatOnlyEnvOverrides(home, accountKey);
+    },
+  });
+  const p = getSessionPool();
+  const keys =
+    config.configDirs?.length > 0
+      ? config.configDirs.map((d) => poolAccountKey(d))
+      : ["default"];
+  for (const k of keys) {
+    void p?.ensureWarm(k, model);
+  }
 }
 
 /**
@@ -69,6 +121,7 @@ export function setupGracefulShutdown(
     );
 
     // Stop accepting new connections and kill all in-flight agent processes
+    shutdownSessionPool();
     killAllChildProcesses();
 
     const closePromises = servers.map(
@@ -136,6 +189,9 @@ function startSingleServer(
     console.log(`- agent bin: ${config.agentBin}`);
     console.log(
       `- ACP: ${config.useAcp ? "yes" : "no"}${config.useAcp ? ` (launcher: ${acpLauncherLabel(config.acpArgs)})` : ""}`,
+    );
+    console.log(
+      `- session pool: ${config.sessionPool ? `yes (minIdle=${config.sessionPoolMinIdle}, max=${config.sessionPoolMaxSessions})` : "no"}`,
     );
     console.log(`- workspace: ${config.workspace}`);
     console.log(`- mode: ${config.mode}`);

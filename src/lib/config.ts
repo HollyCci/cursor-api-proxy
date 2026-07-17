@@ -75,6 +75,11 @@ export type BridgeConfig = {
   contextExtra?: string;
   /** Opt-in OpenAI tool_calls bridge for text-only Cursor output. */
   toolCalls: boolean;
+  /** Virgin one-shot ACP session pool (requires useAcp). */
+  sessionPool: boolean;
+  sessionPoolMinIdle: number;
+  sessionPoolMaxSessions: number;
+  sessionPoolIdleTtlMs: number;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -133,5 +138,12 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     bridgePackageVersion: readBridgePackageVersion(),
     contextExtra: env.contextExtra,
     toolCalls: env.toolCalls,
+    sessionPool: env.sessionPool && env.useAcp,
+    sessionPoolMinIdle: env.sessionPoolMinIdle,
+    sessionPoolMaxSessions: Math.max(
+      env.sessionPoolMinIdle,
+      env.sessionPoolMaxSessions,
+    ),
+    sessionPoolIdleTtlMs: env.sessionPoolIdleTtlMs,
   };
 }

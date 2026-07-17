@@ -6,6 +6,7 @@ import type { CursorExecutionMode } from "./execution-mode.js";
 import { run, runStreaming } from "./process.js";
 import { getChatOnlyEnvOverrides } from "./workspace.js";
 import { readKeychainToken, writeCachedToken } from "./token-cache.js";
+import { getSessionPool, poolAccountKey } from "./acp-session-pool.js";
 
 function cacheTokenForAccount(configDir?: string): void {
   if (!configDir) return;
@@ -17,6 +18,9 @@ export type AgentRunResult = {
   code: number;
   stdout: string;
   stderr: string;
+  latencyMarks?: Record<string, number>;
+  /** True when served by virgin session pool (not a latency timestamp). */
+  poolHit?: boolean;
 };
 
 function acpArgsWithModel(acpArgs: string[], model: string): string[] {
@@ -52,7 +56,75 @@ function extractModeFromCmdArgs(cmdArgs: string[]): CursorExecutionMode {
   return "ask";
 }
 
-export function runAgentSync(
+async function trySessionPoolSync(
+  config: BridgeConfig,
+  stdinPrompt: string,
+  cmdArgs: string[],
+  configDir: string | undefined,
+  signal: AbortSignal | undefined,
+  effectiveChatOnly: boolean,
+): Promise<AgentRunResult | null> {
+  const pool = getSessionPool();
+  if (!pool?.enabled || !config.useAcp) return null;
+  // Pool is chat-only / ask-mode / non-max only (Fable B1/B2).
+  if (!effectiveChatOnly) return null;
+  if (config.maxMode) return null;
+  const mode = extractModeFromCmdArgs(cmdArgs);
+  if (mode !== "ask") return null;
+  if (signal?.aborted) return null;
+
+  const accountKey = poolAccountKey(configDir);
+  const acpModel = extractModelFromCmdArgs(cmdArgs);
+  // Refill is async / off request path; never await warm on the hot path.
+  void pool.ensureWarm(accountKey, acpModel);
+  const checkout = pool.checkout(accountKey, acpModel);
+  if (!checkout) {
+    console.log(`[acp-pool] miss account=${accountKey} → cold ACP`);
+    return null;
+  }
+  if (checkout.conn.isDead) {
+    console.warn(
+      `[acp-pool] dead conn on checkout account=${accountKey} → cold ACP`,
+    );
+    try {
+      await checkout.discard();
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+  try {
+    const out = await checkout.promptOnce(stdinPrompt, { signal });
+    // Empty stdout = demux/protocol failure → cold (Fable B3).
+    if (!out.stdout.trim()) {
+      console.warn(
+        `[acp-pool] empty stdout account=${accountKey} → cold ACP`,
+      );
+      await checkout.discard();
+      return null;
+    }
+    await checkout.discard();
+    if (signal?.aborted) return null;
+    cacheTokenForAccount(configDir);
+    return {
+      code: 0,
+      stdout: out.stdout,
+      stderr: "",
+      latencyMarks: out.latencyMarks,
+      poolHit: true,
+    };
+  } catch (err) {
+    console.warn(`[acp-pool] prompt failed, discard + cold fallback:`, err);
+    try {
+      await checkout.discard();
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+}
+
+export async function runAgentSync(
   config: BridgeConfig,
   workspaceDir: string,
   effectiveChatOnly: boolean,
@@ -63,6 +135,25 @@ export function runAgentSync(
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
   if (config.useAcp && typeof stdinPrompt === "string") {
+    const pooled = await trySessionPoolSync(
+      config,
+      stdinPrompt,
+      cmdArgs,
+      configDir,
+      signal,
+      effectiveChatOnly,
+    );
+    if (pooled) {
+      if (tempDir) {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      return pooled;
+    }
+
     const acpModel = extractModelFromCmdArgs(cmdArgs);
     const acpMode = extractModeFromCmdArgs(cmdArgs);
     let args = acpArgsWithWorkspace(config.acpArgs, workspaceDir);

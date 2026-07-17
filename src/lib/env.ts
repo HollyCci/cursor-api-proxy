@@ -64,6 +64,14 @@ export type LoadedEnv = {
   contextExtra?: string;
   /** Convert textual Cursor function requests into OpenAI tool_calls. */
   toolCalls: boolean;
+  /**
+   * When true (and useAcp), enable virgin one-shot ACP session pool.
+   * See CURSOR_BRIDGE_SESSION_POOL.
+   */
+  sessionPool: boolean;
+  sessionPoolMinIdle: number;
+  sessionPoolMaxSessions: number;
+  sessionPoolIdleTtlMs: number;
 };
 
 export type AgentCommand = {
@@ -392,6 +400,19 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     contextPreamble,
     contextExtra,
     toolCalls: envBool(env, ["CURSOR_BRIDGE_TOOL_CALLS"], false),
+    sessionPool: envBool(env, ["CURSOR_BRIDGE_SESSION_POOL"], false),
+    sessionPoolMinIdle: Math.max(
+      1,
+      Math.floor(envNumber(env, ["CURSOR_BRIDGE_SESSION_POOL_MIN_IDLE"], 2)),
+    ),
+    sessionPoolMaxSessions: Math.max(
+      1,
+      Math.floor(envNumber(env, ["CURSOR_BRIDGE_SESSION_POOL_MAX"], 3)),
+    ),
+    sessionPoolIdleTtlMs: Math.max(
+      60_000,
+      envNumber(env, ["CURSOR_BRIDGE_SESSION_POOL_IDLE_TTL_MS"], 15 * 60_000),
+    ),
   };
 }
 

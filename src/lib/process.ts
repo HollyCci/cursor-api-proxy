@@ -1,11 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolveAgentCommand } from "./env.js";
+import { createAgentLatencyBag } from "./latency-waterfall.js";
 import { runMaxModePreflight } from "./max-mode-preflight.js";
 
 export type RunResult = {
   code: number;
   stdout: string;
   stderr: string;
+  latencyMarks?: Record<string, number>;
 };
 
 export type RunOptions = {
@@ -108,8 +110,10 @@ export function runStreaming(
   cmd: string,
   args: string[],
   opts: RunStreamingOptions,
-): Promise<{ code: number; stderr: string }> {
+): Promise<{ code: number; stderr: string; latencyMarks?: Record<string, number> }> {
   return new Promise((resolve, reject) => {
+    const latency = createAgentLatencyBag();
+    latency.mark("spawn_start");
     const child = spawnChild(cmd, args, {
       cwd: opts.cwd,
       maxMode: opts.maxMode,
@@ -117,6 +121,8 @@ export function runStreaming(
       envOverrides: opts.envOverrides,
       configDir: opts.configDir,
     });
+    latency.mark("spawn_ready");
+    // CLI has no ACP session: attribute cold-start until first stdout as session_ready.
 
     activeChildren.add(child);
 
@@ -146,6 +152,8 @@ export function runStreaming(
 
     child.stdout!.setEncoding("utf8");
     child.stdout!.on("data", (chunk: string) => {
+      latency.mark("session_ready");
+      latency.mark("model_first_byte");
       lineBuffer += chunk;
       const lines = lineBuffer.split("\n");
       lineBuffer = lines.pop() ?? "";
@@ -178,7 +186,12 @@ export function runStreaming(
         const signalNote = `terminated by signal ${signal}`;
         stderr = stderr.trim() ? `${stderr.trim()}\n${signalNote}` : signalNote;
       }
-      resolve({ code: code ?? (signal ? -1 : 0), stderr });
+      latency.mark("model_complete");
+      resolve({
+        code: code ?? (signal ? -1 : 0),
+        stderr,
+        latencyMarks: latency.absoluteMarks(),
+      });
     });
   });
 }
@@ -189,6 +202,8 @@ export function run(
   opts: RunOptions = {},
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
+    const latency = createAgentLatencyBag();
+    latency.mark("spawn_start");
     const child = spawnChild(cmd, args, {
       cwd: opts.cwd,
       maxMode: opts.maxMode,
@@ -196,6 +211,8 @@ export function run(
       envOverrides: opts.envOverrides,
       configDir: opts.configDir,
     });
+    latency.mark("spawn_ready");
+    // CLI has no ACP session: attribute cold-start until first stdout as session_ready.
 
     activeChildren.add(child);
 
@@ -221,7 +238,11 @@ export function run(
 
     child.stdout!.setEncoding("utf8");
     child.stderr!.setEncoding("utf8");
-    child.stdout!.on("data", (c) => (stdout += c));
+    child.stdout!.on("data", (c) => {
+      latency.mark("session_ready");
+      latency.mark("model_first_byte");
+      stdout += c;
+    });
     child.stderr!.on("data", (c) => (stderr += c));
 
     child.on("error", (err: NodeJS.ErrnoException) => {
@@ -247,7 +268,13 @@ export function run(
         const signalNote = `terminated by signal ${signal}`;
         stderr = stderr.trim() ? `${stderr.trim()}\n${signalNote}` : signalNote;
       }
-      resolve({ code: code ?? (signal ? -1 : 0), stdout, stderr });
+      latency.mark("model_complete");
+      resolve({
+        code: code ?? (signal ? -1 : 0),
+        stdout,
+        stderr,
+        latencyMarks: latency.absoluteMarks(),
+      });
     });
   });
 }

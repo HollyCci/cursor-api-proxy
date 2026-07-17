@@ -10,14 +10,17 @@
 import { createInterface } from "node:readline";
 
 const scenario = process.env.FAKE_ACP_SCENARIO || "";
+let sessSeq = 0;
 
 function sessionNewResult() {
+  sessSeq += 1;
+  const sessionId = `sess-${sessSeq}`;
   if (scenario === "empty_models") {
-    return { sessionId: "sess-1", models: { availableModels: [] } };
+    return { sessionId, models: { availableModels: [] } };
   }
   if (scenario === "dup_names") {
     return {
-      sessionId: "sess-1",
+      sessionId,
       models: {
         availableModels: [
           { modelId: "first-id[]", name: "gpt-4" },
@@ -27,7 +30,7 @@ function sessionNewResult() {
     };
   }
   return {
-    sessionId: "sess-1",
+    sessionId,
     models: {
       availableModels: [{ modelId: "gpt-4[fast=false]", name: "gpt-4" }],
     },
@@ -59,13 +62,17 @@ rl.on("line", (line) => {
       else if (msg.method === "authenticate") result = {};
       else if (msg.method === "session/new") result = sessionNewResult();
       else if (msg.method === "session/set_config_option") result = {};
-      else if (msg.method === "session/prompt") {
+      else if (msg.method === "session/cancel") {
         result = {};
+      } else if (msg.method === "session/prompt") {
+        result = {};
+        const sessionId = msg.params?.sessionId;
         process.stdout.write(
           JSON.stringify({
             jsonrpc: "2.0",
             method: "session/update",
             params: {
+              sessionId,
               update: {
                 sessionUpdate: "agent_message_chunk",
                 content: { text: "Hello from fake ACP" },

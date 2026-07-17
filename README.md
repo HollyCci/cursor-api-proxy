@@ -194,6 +194,10 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_PROMPT_VIA_STDIN` | `false` | When `true`, sends the user prompt via **stdin** instead of argv (helps on Windows if argv is truncated). |
 | `CURSOR_BRIDGE_USE_ACP` | `false` | When `true`, uses **ACP (Agent Client Protocol)** over stdio (`agent acp`). Avoids Windows argv limits. See [Cursor ACP docs](https://cursor.com/docs/cli/acp). Set `NODE_DEBUG=cursor-api-proxy:acp` to debug. |
 | `CURSOR_BRIDGE_TOOL_CALLS` | `false` | When enabled, buffers requests containing OpenAI `tools`, converts the first validated Cursor JSON function request into native `tool_calls`, and preserves JSON/SSE semantics from the request's `stream` value. The proxy never executes tools. |
+| `CURSOR_BRIDGE_SESSION_POOL` | `false` | When `true` **and** `CURSOR_BRIDGE_USE_ACP=true`, enable virgin one-shot ACP session pool (prewarm `session/new`, checkout → one prompt → discard). No sticky reuse. Miss → cold ACP. |
+| `CURSOR_BRIDGE_SESSION_POOL_MIN_IDLE` | `2` | Minimum idle virgin sessions per account key. |
+| `CURSOR_BRIDGE_SESSION_POOL_MAX` | `3` | Max sessions per account (including warming/checked-out). |
+| `CURSOR_BRIDGE_SESSION_POOL_IDLE_TTL_MS` | `900000` | Discard pooled virgin sessions older than this. |
 | `CURSOR_BRIDGE_ACP_SKIP_AUTHENTICATE` | auto | When `CURSOR_API_KEY` is set, skips the ACP authenticate step. Set to `true` to skip when using `agent login` instead. |
 | `CURSOR_BRIDGE_ACP_RAW_DEBUG` | `false` | When `1` or `true`, log raw JSON-RPC from ACP stdout (requires `NODE_DEBUG=cursor-api-proxy:acp`). |
 | `CURSOR_AGENT_BIN` | `agent` | Path to Cursor CLI binary. Alias precedence: `CURSOR_AGENT_BIN`, then `CURSOR_CLI_BIN`, then `CURSOR_CLI_PATH`. |
