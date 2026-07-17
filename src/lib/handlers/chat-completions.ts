@@ -52,6 +52,10 @@ import {
   shouldUseToolBridge,
 } from "../tool-calls.js";
 import { LatencyWaterfall } from "../latency-waterfall.js";
+import {
+  thoughtStreamDelta,
+  withReasoningContent,
+} from "../thought-mode.js";
 
 function isRateLimited(stderr: string): boolean {
   return /\b429\b|rate.?limit|too many requests/i.test(stderr);
@@ -75,6 +79,14 @@ function writeBufferedEvents(
     res.write(`data: ${JSON.stringify(chunk)}\n\n`);
   }
   res.write("data: [DONE]\n\n");
+}
+
+function maybeWarnThoughtOnly(content: string, reasoning?: string): void {
+  if (!content.trim() && reasoning?.trim()) {
+    console.warn(
+      "[acp] thought-only response; leaving content empty (not falling back to thought)",
+    );
+  }
 }
 
 export type ChatCompletionsCtx = {
@@ -241,6 +253,7 @@ export async function handleChatCompletions(
 
     if (toolBridgeActive) {
       let accumulated = "";
+      let accumulatedThought = "";
       const onLine = config.useAcp
         ? (text: string) => {
             accumulated += text;
@@ -251,6 +264,12 @@ export async function handleChatCompletions(
             },
             () => {},
           );
+      // Always collect thought for warn/isolation; never feed tool buffer.
+      const onThought = config.useAcp
+        ? (text: string) => {
+            accumulatedThought += text;
+          }
+        : undefined;
 
       runAgentStream(
         config,
@@ -262,6 +281,7 @@ export async function handleChatCompletions(
         promptForAgent,
         configDir,
         abortController.signal,
+        onThought,
       )
         .then(({ code, stderr: stderrOut }) => {
           const latencyMs = Date.now() - streamStart;
@@ -301,6 +321,7 @@ export async function handleChatCompletions(
             accumulated,
             true,
           );
+          maybeWarnThoughtOnly(accumulated, accumulatedThought);
           if (
             containsToolCallCandidate(accumulated) &&
             !parseToolCallOutput(accumulated, body.tools, {
@@ -311,18 +332,35 @@ export async function handleChatCompletions(
               `[tool-calls] rejected model tool output for ${displayModel ?? "default"}`,
             );
           }
-          writeBufferedEvents(
-            res,
-            buildBufferedStreamChunks({
+          const buffered = buildBufferedStreamChunks({
+            id,
+            created,
+            model: displayModel,
+            text: accumulated,
+            tools: body.tools,
+            usage: usageFor(agentPrompt, accumulated),
+            options: { toolChoice: body.tool_choice },
+          });
+          const reasoningDelta = thoughtStreamDelta(
+            accumulatedThought,
+            config.thoughtMode,
+          );
+          if (reasoningDelta) {
+            buffered.unshift({
               id,
+              object: "chat.completion.chunk",
               created,
               model: displayModel,
-              text: accumulated,
-              tools: body.tools,
-              usage: usageFor(agentPrompt, accumulated),
-              options: { toolChoice: body.tool_choice },
-            }),
-          );
+              choices: [
+                {
+                  index: 0,
+                  delta: reasoningDelta,
+                  finish_reason: null,
+                },
+              ],
+            });
+          }
+          writeBufferedEvents(res, buffered);
           res.end();
         })
         .catch((err) => {
@@ -351,6 +389,21 @@ export async function handleChatCompletions(
 
     if (config.useAcp && typeof promptForAgent === "string") {
       let accumulated = "";
+      let accumulatedThought = "";
+      const onThought = (chunk: string) => {
+        accumulatedThought += chunk;
+        const delta = thoughtStreamDelta(chunk, config.thoughtMode);
+        if (!delta) return;
+        res.write(
+          `data: ${JSON.stringify({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model: displayModel,
+            choices: [{ index: 0, delta, finish_reason: null }],
+          })}\n\n`,
+        );
+      };
       runAgentStream(
         config,
         workspaceDir,
@@ -374,6 +427,7 @@ export async function handleChatCompletions(
         promptForAgent,
         configDir,
         abortController.signal,
+        onThought,
       )
         .then(({ code, stderr: stderrOut }) => {
           const latencyMs = Date.now() - streamStart;
@@ -414,6 +468,7 @@ export async function handleChatCompletions(
             accumulated,
             true,
           );
+          maybeWarnThoughtOnly(accumulated, accumulatedThought);
           const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
           const completionTokens = Math.max(
             1,
@@ -619,6 +674,7 @@ export async function handleChatCompletions(
     latency.mark("model_complete");
   }
   const content = out.stdout.trim();
+  maybeWarnThoughtOnly(content, out.reasoning);
   logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
 
   const usage = usageFor(agentPrompt, content);
@@ -636,10 +692,15 @@ export async function handleChatCompletions(
       `[tool-calls] rejected model tool output for ${displayModel ?? "default"}`,
     );
   }
-  const message =
+  const baseMessage =
     resolved.kind === "tool_call"
       ? { role: "assistant", content: null, tool_calls: [resolved.toolCall] }
       : { role: "assistant", content: resolved.content };
+  const message = withReasoningContent(
+    baseMessage,
+    out.reasoning,
+    config.thoughtMode,
+  );
   const finishReason =
     resolved.kind === "tool_call" ? "tool_calls" : "stop";
 

@@ -153,6 +153,32 @@ describe("runAcpSync", () => {
     });
     expect(result.code).toBe(1);
   });
+
+  it("keeps thought out of stdout and exposes reasoning separately", async () => {
+    const result = await runAcpSync(node, [fakeServerPath], "hi", {
+      cwd,
+      timeoutMs: 5000,
+      skipAuthenticate: true,
+      env: { FAKE_ACP_SCENARIO: "with_thought" },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("MESSAGE_ONLY");
+    expect(result.stdout).not.toContain("THOUGHT_SECRET");
+    expect(result.reasoning).toBe("THOUGHT_SECRET");
+  });
+
+  it("does not put thought-channel tool JSON into stdout", async () => {
+    const result = await runAcpSync(node, [fakeServerPath], "hi", {
+      cwd,
+      timeoutMs: 5000,
+      skipAuthenticate: true,
+      env: { FAKE_ACP_SCENARIO: "thought_tool_json" },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("plain reply");
+    expect(result.stdout).not.toContain("lookup_user");
+    expect(result.reasoning).toContain("lookup_user");
+  });
 });
 
 describe("runAcpStream", () => {
@@ -171,6 +197,46 @@ describe("runAcpStream", () => {
     );
     expect(result.code).toBe(0);
     expect(chunks.join("")).toContain("Hello from fake ACP");
+  });
+
+  it("streams message and thought on separate callbacks", async () => {
+    const messages: string[] = [];
+    const thoughts: string[] = [];
+    const result = await runAcpStream(
+      node,
+      [fakeServerPath],
+      "stream",
+      {
+        cwd,
+        timeoutMs: 5000,
+        skipAuthenticate: true,
+        env: { FAKE_ACP_SCENARIO: "with_thought" },
+      },
+      (t) => messages.push(t),
+      (t) => thoughts.push(t),
+    );
+    expect(result.code).toBe(0);
+    expect(messages.join("")).toBe("MESSAGE_ONLY");
+    expect(thoughts.join("")).toBe("THOUGHT_SECRET");
+  });
+
+  it("drops thought when onThoughtChunk is omitted", async () => {
+    const messages: string[] = [];
+    const result = await runAcpStream(
+      node,
+      [fakeServerPath],
+      "stream",
+      {
+        cwd,
+        timeoutMs: 5000,
+        skipAuthenticate: true,
+        env: { FAKE_ACP_SCENARIO: "with_thought" },
+      },
+      (t) => messages.push(t),
+    );
+    expect(result.code).toBe(0);
+    expect(messages.join("")).toBe("MESSAGE_ONLY");
+    expect(messages.join("")).not.toContain("THOUGHT_SECRET");
   });
 
   it("sends session/set_config_option with configId when model is set", async () => {

@@ -18,6 +18,8 @@ export type AgentRunResult = {
   code: number;
   stdout: string;
   stderr: string;
+  /** Thought channel text when ACP emitted agent_thought_chunk (route decides drop/forward). */
+  reasoning?: string;
   latencyMarks?: Record<string, number>;
   /** True when served by virgin session pool (not a latency timestamp). */
   poolHit?: boolean;
@@ -110,6 +112,7 @@ async function trySessionPoolSync(
       code: 0,
       stdout: out.stdout,
       stderr: "",
+      ...(out.reasoning ? { reasoning: out.reasoning } : {}),
       latencyMarks: out.latencyMarks,
       poolHit: true,
     };
@@ -221,6 +224,7 @@ export function runAgentStream(
   stdinPrompt?: string,
   configDir?: string,
   signal?: AbortSignal,
+  onThought?: StreamLineHandler,
 ): Promise<{ code: number; stderr: string }> {
   if (config.useAcp && typeof stdinPrompt === "string") {
     const acpModel = extractModelFromCmdArgs(cmdArgs);
@@ -248,6 +252,7 @@ export function runAgentStream(
         signal,
       },
       onLine,
+      onThought,
     ).then((result) => {
       cacheTokenForAccount(configDir);
       if (tempDir) {

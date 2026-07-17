@@ -79,6 +79,7 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
     toolCalls: false,
+    thoughtMode: "drop",
     sessionPool: false,
     sessionPoolMinIdle: 1,
     sessionPoolMaxSessions: 2,

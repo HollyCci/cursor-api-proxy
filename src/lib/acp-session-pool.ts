@@ -58,8 +58,16 @@ export type PoolCheckout = {
   effectiveModel: string;
   promptOnce: (
     prompt: string,
-    opts?: { onChunk?: (text: string) => void; signal?: AbortSignal },
-  ) => Promise<{ stdout: string; latencyMarks: Record<string, number> }>;
+    opts?: {
+      onChunk?: (text: string) => void;
+      onThoughtChunk?: (text: string) => void;
+      signal?: AbortSignal;
+    },
+  ) => Promise<{
+    stdout: string;
+    reasoning?: string;
+    latencyMarks: Record<string, number>;
+  }>;
   discard: () => Promise<void>;
 };
 

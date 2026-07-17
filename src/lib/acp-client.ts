@@ -33,8 +33,14 @@ export type AcpRunOptions = {
 
 export type AcpSyncResult = {
   code: number;
+  /** Assistant message text only (never includes agent_thought_chunk). */
   stdout: string;
   stderr: string;
+  /**
+   * Concatenated agent_thought_chunk text for this turn.
+   * Present when any thought arrived; callers decide drop vs reasoning_content.
+   */
+  reasoning?: string;
   /** Absolute performance.now() marks for waterfall merge. */
   latencyMarks?: Record<string, number>;
 };
@@ -104,9 +110,41 @@ function parseAcpStdoutLine(line: string): AcpParsedMsg | null {
   }
 }
 
+/** Extract text payload from an ACP session/update content field. */
+export function extractAcpUpdateText(
+  content:
+    | { text?: string }
+    | Array<{ content?: { text?: string }; text?: string }>
+    | undefined
+    | null,
+): string {
+  if (
+    typeof content === "object" &&
+    content !== null &&
+    !Array.isArray(content) &&
+    typeof (content as { text?: string }).text === "string"
+  ) {
+    return (content as { text: string }).text;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((c: { content?: { text?: string }; text?: string }) =>
+        typeof c?.content?.text === "string"
+          ? c.content.text
+          : typeof c?.text === "string"
+            ? c.text
+            : "",
+      )
+      .join("");
+  }
+  return "";
+}
+
 /**
  * Handle ACP server→client notifications (session/update chunks, permissions, cursor/*).
  * Returns true if the message was consumed as a notification.
+ *
+ * Thought and message are separate channels: callers must not mix them into content.
  */
 function handleAcpNotification(
   msg: AcpParsedMsg,
@@ -114,6 +152,7 @@ function handleAcpNotification(
     rawDebug?: boolean;
     stdin: NodeJS.WritableStream | null | undefined;
     onAgentTextChunk?: (text: string) => void;
+    onAgentThoughtChunk?: (text: string) => void;
   },
 ): boolean {
   if (msg.method === "session/update") {
@@ -122,26 +161,12 @@ function handleAcpNotification(
       content?: { text?: string } | Array<{ content?: { text?: string }; text?: string }>;
     } | undefined;
     const content = update?.content;
-    const text =
-      typeof content === "object" && content !== null && !Array.isArray(content) && typeof (content as { text?: string }).text === "string"
-        ? (content as { text: string }).text
-        : Array.isArray(content)
-          ? content
-              .map((c: { content?: { text?: string }; text?: string }) =>
-                typeof c?.content?.text === "string"
-                  ? c.content.text
-                  : typeof c?.text === "string"
-                    ? c.text
-                    : "",
-              )
-              .join("")
-          : "";
+    const text = extractAcpUpdateText(content);
     const sessionUpdate = update?.sessionUpdate;
-    if (
-      (sessionUpdate === "agent_message_chunk" || sessionUpdate === "agent_thought_chunk") &&
-      text
-    ) {
+    if (sessionUpdate === "agent_message_chunk" && text) {
       opts.onAgentTextChunk?.(text);
+    } else if (sessionUpdate === "agent_thought_chunk" && text) {
+      opts.onAgentThoughtChunk?.(text);
     } else if (
       sessionUpdate &&
       sessionUpdate !== "agent_thought_chunk" &&
@@ -294,6 +319,7 @@ export function runAcpSync(
 
     let stderr = "";
     let accumulated = "";
+    let accumulatedThought = "";
     let resolved = false;
 
     const onAbort = () => {
@@ -324,10 +350,12 @@ export function runAcpSync(
       } catch {
         /* ignore */
       }
+      const reasoning = accumulatedThought.trim();
       resolve({
         code,
         stdout: accumulated.trim(),
         stderr: stderr.trim(),
+        ...(reasoning ? { reasoning } : {}),
         latencyMarks: latency.absoluteMarks(),
       });
     };
@@ -377,6 +405,10 @@ export function runAcpSync(
           onAgentTextChunk: (text) => {
             latency.mark("model_first_byte");
             accumulated += text;
+          },
+          onAgentThoughtChunk: (text) => {
+            latency.mark("model_first_byte");
+            accumulatedThought += text;
           },
         });
       } catch {
@@ -495,6 +527,7 @@ export function runAcpStream(
   prompt: string,
   opts: AcpRunOptions,
   onChunk: (text: string) => void,
+  onThoughtChunk?: (text: string) => void,
 ): Promise<AcpStreamResult> {
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const latency = createAgentLatencyBag();
@@ -592,6 +625,10 @@ export function runAcpStream(
           onAgentTextChunk: (text) => {
             latency.mark("model_first_byte");
             onChunk(text);
+          },
+          onAgentThoughtChunk: (text) => {
+            latency.mark("model_first_byte");
+            onThoughtChunk?.(text);
           },
         });
       } catch {

@@ -313,6 +313,20 @@ describe("loadEnvConfig", () => {
       true,
     );
   });
+
+  it("parses CURSOR_BRIDGE_THOUGHT_MODE (default drop)", () => {
+    expect(loadEnvConfig({ env: {} }).thoughtMode).toBe("drop");
+    expect(
+      loadEnvConfig({ env: { CURSOR_BRIDGE_THOUGHT_MODE: "reasoning" } })
+        .thoughtMode,
+    ).toBe("reasoning");
+    expect(
+      loadEnvConfig({ env: { CURSOR_BRIDGE_THOUGHT_MODE: "DROP" } }).thoughtMode,
+    ).toBe("drop");
+    expect(
+      loadEnvConfig({ env: { CURSOR_BRIDGE_THOUGHT_MODE: "nope" } }).thoughtMode,
+    ).toBe("drop");
+  });
 });
 
 describe("discoverAccountDirs filtering", () => {

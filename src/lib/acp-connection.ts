@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 
 import { trackChildProcess } from "./process.js";
 import {
+  extractAcpUpdateText,
   resolveAcpModelConfigValue,
   type AcpAvailableModel,
 } from "./acp-client.js";
@@ -111,7 +112,10 @@ export class AcpConnection {
   private dead = false;
   private readonly activeHandlers = new Map<
     string,
-    { onText?: (text: string) => void }
+    {
+      onText?: (text: string) => void;
+      onThought?: (text: string) => void;
+    }
   >();
   private readonly cwd: string;
 
@@ -255,14 +259,15 @@ export class AcpConnection {
       const sessionId = String(
         params.sessionId ?? (update as { sessionId?: string }).sessionId ?? "",
       );
-      const content = update?.content;
-      let text = "";
-      if (content && typeof content === "object" && !Array.isArray(content)) {
-        text = content.text ?? "";
-      } else if (Array.isArray(content)) {
-        text = content.map((c) => c?.content?.text ?? c?.text ?? "").join("");
-      }
+      const sessionUpdate = update?.sessionUpdate;
+      const text = extractAcpUpdateText(update?.content);
       if (!text) return;
+      if (
+        sessionUpdate !== "agent_message_chunk" &&
+        sessionUpdate !== "agent_thought_chunk"
+      ) {
+        return;
+      }
       const handler = sessionId ? this.activeHandlers.get(sessionId) : undefined;
       if (!handler) {
         console.warn(
@@ -270,7 +275,11 @@ export class AcpConnection {
         );
         return;
       }
-      handler.onText?.(text);
+      if (sessionUpdate === "agent_thought_chunk") {
+        handler.onThought?.(text);
+      } else {
+        handler.onText?.(text);
+      }
       return;
     }
 
@@ -348,8 +357,16 @@ export class AcpConnection {
   async promptOnce(
     sessionId: string,
     prompt: string,
-    opts?: { onChunk?: (text: string) => void; signal?: AbortSignal },
-  ): Promise<{ stdout: string; latencyMarks: Record<string, number> }> {
+    opts?: {
+      onChunk?: (text: string) => void;
+      onThoughtChunk?: (text: string) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<{
+    stdout: string;
+    reasoning?: string;
+    latencyMarks: Record<string, number>;
+  }> {
     if (this.activeHandlers.has(sessionId)) {
       throw new Error(`session already checked out: ${sessionId}`);
     }
@@ -360,6 +377,7 @@ export class AcpConnection {
       prompt_dispatch_start: performance.now(),
     };
     let accumulated = "";
+    let accumulatedThought = "";
     this.activeHandlers.set(sessionId, {
       onText: (text) => {
         if (marks.model_first_byte == null) {
@@ -367,6 +385,13 @@ export class AcpConnection {
         }
         accumulated += text;
         opts?.onChunk?.(text);
+      },
+      onThought: (text) => {
+        if (marks.model_first_byte == null) {
+          marks.model_first_byte = performance.now();
+        }
+        accumulatedThought += text;
+        opts?.onThoughtChunk?.(text);
       },
     });
 
@@ -384,7 +409,12 @@ export class AcpConnection {
         prompt: [{ type: "text", text: prompt }],
       });
       marks.model_complete = performance.now();
-      return { stdout: accumulated, latencyMarks: marks };
+      const reasoning = accumulatedThought.trim();
+      return {
+        stdout: accumulated,
+        ...(reasoning ? { reasoning } : {}),
+        latencyMarks: marks,
+      };
     } finally {
       this.activeHandlers.delete(sessionId);
       opts?.signal?.removeEventListener("abort", onAbort);

@@ -65,6 +65,13 @@ export type LoadedEnv = {
   /** Convert textual Cursor function requests into OpenAI tool_calls. */
   toolCalls: boolean;
   /**
+   * How to surface ACP agent_thought_chunk:
+   * - drop: never include in response (default; content stays message-only)
+   * - reasoning: map to OpenAI reasoning_content
+   * See CURSOR_BRIDGE_THOUGHT_MODE.
+   */
+  thoughtMode: "drop" | "reasoning";
+  /**
    * When true (and useAcp), enable virgin one-shot ACP session pool.
    * See CURSOR_BRIDGE_SESSION_POOL.
    */
@@ -120,6 +127,16 @@ function envBool(
     return true;
   if (value === "0" || value === "false" || value === "no" || value === "off")
     return false;
+  return defaultValue;
+}
+
+function envThoughtMode(
+  env: EnvSource,
+  names: string[],
+  defaultValue: "drop" | "reasoning",
+): "drop" | "reasoning" {
+  const raw = envString(env, names)?.toLowerCase();
+  if (raw === "drop" || raw === "reasoning") return raw;
   return defaultValue;
 }
 
@@ -400,6 +417,7 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     contextPreamble,
     contextExtra,
     toolCalls: envBool(env, ["CURSOR_BRIDGE_TOOL_CALLS"], false),
+    thoughtMode: envThoughtMode(env, ["CURSOR_BRIDGE_THOUGHT_MODE"], "drop"),
     sessionPool: envBool(env, ["CURSOR_BRIDGE_SESSION_POOL"], false),
     sessionPoolMinIdle: Math.max(
       1,

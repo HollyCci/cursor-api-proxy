@@ -75,6 +75,8 @@ export type BridgeConfig = {
   contextExtra?: string;
   /** Opt-in OpenAI tool_calls bridge for text-only Cursor output. */
   toolCalls: boolean;
+  /** ACP thought channel policy: drop (default) or map to reasoning_content. */
+  thoughtMode: "drop" | "reasoning";
   /** Virgin one-shot ACP session pool (requires useAcp). */
   sessionPool: boolean;
   sessionPoolMinIdle: number;
@@ -138,6 +140,7 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     bridgePackageVersion: readBridgePackageVersion(),
     contextExtra: env.contextExtra,
     toolCalls: env.toolCalls,
+    thoughtMode: env.thoughtMode,
     sessionPool: env.sessionPool && env.useAcp,
     sessionPoolMinIdle: env.sessionPoolMinIdle,
     sessionPoolMaxSessions: Math.max(

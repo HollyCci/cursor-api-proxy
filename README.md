@@ -193,6 +193,7 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_MULTI_PORT` | `false` | When `true` and multiple config dirs are set, spawns a separate server per directory on incrementing ports starting from `CURSOR_BRIDGE_PORT`. |
 | `CURSOR_BRIDGE_PROMPT_VIA_STDIN` | `false` | When `true`, sends the user prompt via **stdin** instead of argv (helps on Windows if argv is truncated). |
 | `CURSOR_BRIDGE_USE_ACP` | `false` | When `true`, uses **ACP (Agent Client Protocol)** over stdio (`agent acp`). Avoids Windows argv limits. See [Cursor ACP docs](https://cursor.com/docs/cli/acp). Set `NODE_DEBUG=cursor-api-proxy:acp` to debug. |
+| `CURSOR_BRIDGE_THOUGHT_MODE` | `drop` | ACP `agent_thought_chunk` handling: `drop` (default) keeps thoughts out of OpenAI `content`; `reasoning` maps them to `reasoning_content` / `delta.reasoning_content`. Thoughts never feed the tool-call bridge. |
 | `CURSOR_BRIDGE_TOOL_CALLS` | `false` | When enabled, buffers requests containing OpenAI `tools`, converts the first validated Cursor JSON function request into native `tool_calls`, and preserves JSON/SSE semantics from the request's `stream` value. The proxy never executes tools. |
 | `CURSOR_BRIDGE_SESSION_POOL` | `false` | When `true` **and** `CURSOR_BRIDGE_USE_ACP=true`, enable virgin one-shot ACP session pool (prewarm `session/new`, checkout → one prompt → discard). No sticky reuse. Miss → cold ACP. |
 | `CURSOR_BRIDGE_SESSION_POOL_MIN_IDLE` | `2` | Minimum idle virgin sessions per account key. |

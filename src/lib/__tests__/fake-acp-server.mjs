@@ -3,7 +3,7 @@
  * Reads JSON-RPC from stdin, responds to initialize, authenticate, session/new, session/prompt.
  *
  * Env:
- * - FAKE_ACP_SCENARIO: unset | empty_models | dup_names | fail_set_config
+ * - FAKE_ACP_SCENARIO: unset | empty_models | dup_names | fail_set_config | with_thought | thought_tool_json
  *
  * Emits to stderr for assertions: __FAKE_ACP_SET_CONFIG__:<json>\n
  */
@@ -37,6 +37,22 @@ function sessionNewResult() {
   };
 }
 
+function emitUpdate(sessionId, sessionUpdate, text) {
+  process.stdout.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate,
+          content: { text },
+        },
+      },
+    }) + "\n",
+  );
+}
+
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   try {
@@ -67,19 +83,19 @@ rl.on("line", (line) => {
       } else if (msg.method === "session/prompt") {
         result = {};
         const sessionId = msg.params?.sessionId;
-        process.stdout.write(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            method: "session/update",
-            params: {
-              sessionId,
-              update: {
-                sessionUpdate: "agent_message_chunk",
-                content: { text: "Hello from fake ACP" },
-              },
-            },
-          }) + "\n",
-        );
+        if (scenario === "with_thought") {
+          emitUpdate(sessionId, "agent_thought_chunk", "THOUGHT_SECRET");
+          emitUpdate(sessionId, "agent_message_chunk", "MESSAGE_ONLY");
+        } else if (scenario === "thought_tool_json") {
+          emitUpdate(
+            sessionId,
+            "agent_thought_chunk",
+            '```tool_call\n{"name":"lookup_user","arguments":{"id":"from-thought"}}\n```',
+          );
+          emitUpdate(sessionId, "agent_message_chunk", "plain reply");
+        } else {
+          emitUpdate(sessionId, "agent_message_chunk", "Hello from fake ACP");
+        }
       }
       process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\n");
     }
