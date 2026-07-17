@@ -32,6 +32,7 @@ function base(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: true,
     toolCalls: false,
+    thoughtMode: "drop",
     sessionPool: false,
     sessionPoolMinIdle: 1,
     sessionPoolMaxSessions: 2,
