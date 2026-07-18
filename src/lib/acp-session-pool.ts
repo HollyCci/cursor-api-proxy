@@ -96,14 +96,22 @@ function rmSessionCwd(dir: string | undefined): void {
   }
 }
 
+const REFILL_MAX_ATTEMPTS = 3;
+/** Backoff after attempt 1 and 2 failures (ms). */
+const REFILL_BACKOFF_MS = [100, 300] as const;
+
 export class VirginSessionPool {
   private readonly cfg: SessionPoolConfig;
   private readonly slots = new Map<string, Slot[]>();
-  private readonly refillInFlight = new Set<string>();
+  /** Concurrent warm count per `${accountKey}:${modelKey}`; capped at minIdle. */
+  private readonly refillInFlightCount = new Map<string, number>();
+  /** One converge loop per `${accountKey}:${modelKey}` (coalesces concurrent ensureWarm). */
+  private readonly ensureWarmInFlight = new Map<string, Promise<void>>();
   private readonly connections = new Map<string, AcpConnection>();
   private readonly connecting = new Map<string, Promise<AcpConnection>>();
   private readonly disabledAccounts = new Set<string>();
   private readonly accountEpoch = new Map<string, number>();
+  private stopped = false;
 
   constructor(cfg: SessionPoolConfig) {
     this.cfg = cfg;
@@ -160,23 +168,86 @@ export class VirginSessionPool {
   }
 
   async ensureWarm(accountKey: string, model?: string): Promise<void> {
-    if (!this.cfg.enabled) return;
+    if (!this.cfg.enabled || this.stopped) return;
     const key = accountKey || "default";
     if (this.disabledAccounts.has(key)) return;
     const modelKey = normalizePoolModelKey(model, this.cfg.defaultModel);
-    this.evictExpired(key);
-    const list = this.slots.get(key) ?? [];
-    const idle = list.filter(
+    const flightKey = `${key}:${modelKey}`;
+    const existing = this.ensureWarmInFlight.get(flightKey);
+    if (existing) return existing;
+
+    const run = this.convergeWarm(key, modelKey).finally(() => {
+      if (this.ensureWarmInFlight.get(flightKey) === run) {
+        this.ensureWarmInFlight.delete(flightKey);
+      }
+    });
+    this.ensureWarmInFlight.set(flightKey, run);
+    return run;
+  }
+
+  private calculateRefillNeed(accountKey: string, modelKey: string): number {
+    if (this.stopped || this.disabledAccounts.has(accountKey)) return 0;
+    this.evictExpired(accountKey);
+    const list = this.slots.get(accountKey) ?? [];
+    const matchingPooled = list.filter(
       (s) => s.state === "pooled" && s.model === modelKey,
     ).length;
-    const warming = list.filter(
+    const matchingWarming = list.filter(
       (s) => s.state === "warming" && s.model === modelKey,
     ).length;
-    const need = Math.max(0, this.cfg.minIdle - idle - warming);
-    for (let i = 0; i < need; i++) {
-      void this.refillOne(key, modelKey).catch((err) => {
-        console.warn(`[acp-pool] refill failed account=${key}:`, err);
-      });
+    const allLive = list.filter((s) => s.state !== "dead").length;
+    return Math.min(
+      Math.max(0, this.cfg.minIdle - matchingPooled - matchingWarming),
+      Math.max(0, this.cfg.maxSessions - allLive),
+    );
+  }
+
+  private async sleepMs(ms: number): Promise<void> {
+    if (ms <= 0) return;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  /**
+   * Fill matching idle sessions up to minIdle (subject to maxSessions), with
+   * bounded retries on transient refill failures. Never rejects.
+   */
+  private async convergeWarm(
+    accountKey: string,
+    modelKey: string,
+  ): Promise<void> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < REFILL_MAX_ATTEMPTS; attempt++) {
+      if (this.stopped || this.disabledAccounts.has(accountKey)) return;
+
+      const need = this.calculateRefillNeed(accountKey, modelKey);
+      if (need <= 0) return;
+
+      const results = await Promise.allSettled(
+        Array.from({ length: need }, () =>
+          this.refillOne(accountKey, modelKey),
+        ),
+      );
+      const rejected = results.filter(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      if (rejected.length === 0) {
+        if (this.calculateRefillNeed(accountKey, modelKey) <= 0) return;
+        // Gap remains without failures (capacity / other models) — stop.
+        return;
+      }
+      lastErr = rejected[0]!.reason;
+      if (this.calculateRefillNeed(accountKey, modelKey) <= 0) return;
+      if (attempt >= REFILL_MAX_ATTEMPTS - 1) break;
+      if (this.stopped || this.disabledAccounts.has(accountKey)) return;
+      await this.sleepMs(REFILL_BACKOFF_MS[attempt] ?? 300);
+    }
+    if (lastErr != null) {
+      console.warn(
+        `[acp-pool] refill exhausted account=${accountKey} model=${modelKey}:`,
+        lastErr,
+      );
     }
   }
 
@@ -277,6 +348,7 @@ export class VirginSessionPool {
   }
 
   shutdown(): void {
+    this.stopped = true;
     for (const list of this.slots.values()) {
       for (const s of list) {
         rmSessionCwd(s.sessionCwd);
@@ -288,6 +360,8 @@ export class VirginSessionPool {
     this.connections.clear();
     this.connecting.clear();
     this.slots.clear();
+    this.refillInFlightCount.clear();
+    this.ensureWarmInFlight.clear();
   }
 
   private removeSlot(accountKey: string, sessionId: string): void {
@@ -371,7 +445,7 @@ export class VirginSessionPool {
     accountKey: string,
     modelKey: string,
   ): Promise<void> {
-    if (this.disabledAccounts.has(accountKey)) return;
+    if (this.stopped || this.disabledAccounts.has(accountKey)) return;
     const epoch = this.epochOf(accountKey);
 
     const list = this.slots.get(accountKey) ?? [];
@@ -379,8 +453,9 @@ export class VirginSessionPool {
     if (live >= this.cfg.maxSessions) return;
 
     const flightKey = `${accountKey}:${modelKey}`;
-    if (this.refillInFlight.has(flightKey)) return;
-    this.refillInFlight.add(flightKey);
+    const inFlight = this.refillInFlightCount.get(flightKey) ?? 0;
+    if (inFlight >= this.cfg.minIdle) return;
+    this.refillInFlightCount.set(flightKey, inFlight + 1);
 
     const warming: Slot = {
       accountKey,
@@ -406,6 +481,7 @@ export class VirginSessionPool {
       warming.model = virgin.effectiveModel;
 
       if (
+        this.stopped ||
         this.disabledAccounts.has(accountKey) ||
         this.epochOf(accountKey) !== epoch
       ) {
@@ -428,7 +504,9 @@ export class VirginSessionPool {
       this.maybeKillConnIfDisabledIdle(accountKey);
       throw err;
     } finally {
-      this.refillInFlight.delete(flightKey);
+      const cur = (this.refillInFlightCount.get(flightKey) ?? 1) - 1;
+      if (cur <= 0) this.refillInFlightCount.delete(flightKey);
+      else this.refillInFlightCount.set(flightKey, cur);
     }
   }
 }

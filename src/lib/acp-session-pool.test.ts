@@ -18,6 +18,7 @@ const fakeServerPath = join(cwd, "src", "lib", "__tests__", "fake-acp-server.mjs
 
 afterEach(() => {
   shutdownSessionPool();
+  vi.useRealTimers();
 });
 
 function makePool(extra?: Partial<ConstructorParameters<typeof VirginSessionPool>[0]>) {
@@ -302,6 +303,214 @@ describe("VirginSessionPool checkoutDetailed miss reasons", () => {
       await result.value.discard();
     }
     pool.shutdown();
+  });
+
+  it("ensureWarm fills up to minIdle for a model", async () => {
+    let sessionSeq = 0;
+    const fakeConn = {
+      id: "minidle-conn",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => {
+        sessionSeq += 1;
+        return {
+          sessionId: `sess-minidle-${sessionSeq}`,
+          createdAt: Date.now(),
+          sessionCwd: undefined,
+          effectiveModel: "composer-2.5",
+        };
+      },
+      promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+    } as unknown as AcpConnection;
+
+    const pool = makePool({
+      minIdle: 2,
+      maxSessions: 4,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    await pool.ensureWarm("acc1", "composer-2.5");
+    expect(sessionSeq).toBe(2);
+    expect(pool.stats()["acc1"]?.pooled).toBe(2);
+    expect(pool.stats()["acc1"]?.warming ?? 0).toBe(0);
+    pool.shutdown();
+  });
+
+  it("ensureWarm retries a transient create failure then converges", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const fakeConn = {
+        id: "retry-conn",
+        isDead: false,
+        kill: vi.fn(),
+        cancel: vi.fn(async () => undefined),
+        createVirginSession: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error("transient warm failure");
+          return {
+            sessionId: `sess-retry-${calls}`,
+            createdAt: Date.now(),
+            sessionCwd: undefined,
+            effectiveModel: "composer-2.5",
+          };
+        },
+        promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+      } as unknown as AcpConnection;
+
+      const pool = makePool({
+        minIdle: 1,
+        maxSessions: 2,
+        defaultModel: "composer-2.5",
+        startConnection: async () => fakeConn,
+      });
+      const done = pool.ensureWarm("acc-retry", "composer-2.5");
+      await vi.advanceTimersByTimeAsync(100);
+      await done;
+      expect(calls).toBe(2);
+      expect(pool.stats()["acc-retry"]?.pooled).toBe(1);
+      expect(pool.stats()["acc-retry"]?.warming ?? 0).toBe(0);
+      pool.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ensureWarm stops after 3 permanent failures without rejecting", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const fakeConn = {
+        id: "fail-conn",
+        isDead: false,
+        kill: vi.fn(),
+        cancel: vi.fn(async () => undefined),
+        createVirginSession: async () => {
+          calls += 1;
+          throw new Error("permanent warm failure");
+        },
+        promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+      } as unknown as AcpConnection;
+
+      const pool = makePool({
+        minIdle: 1,
+        maxSessions: 2,
+        defaultModel: "composer-2.5",
+        startConnection: async () => fakeConn,
+      });
+      const done = pool.ensureWarm("acc-perm", "composer-2.5");
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(300);
+      await expect(done).resolves.toBeUndefined();
+      expect(calls).toBe(3);
+      expect(pool.stats()["acc-perm"]?.pooled ?? 0).toBe(0);
+      expect(pool.stats()["acc-perm"]?.warming ?? 0).toBe(0);
+      pool.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("concurrent ensureWarm shares one converge and does not over-create", async () => {
+    let calls = 0;
+    const fakeConn = {
+      id: "coalesce-conn",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => {
+        calls += 1;
+        return {
+          sessionId: `sess-coalesce-${calls}`,
+          createdAt: Date.now(),
+          sessionCwd: undefined,
+          effectiveModel: "composer-2.5",
+        };
+      },
+      promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+    } as unknown as AcpConnection;
+
+    const pool = makePool({
+      minIdle: 2,
+      maxSessions: 4,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    await Promise.all([
+      pool.ensureWarm("acc-coalesce", "composer-2.5"),
+      pool.ensureWarm("acc-coalesce", "composer-2.5"),
+    ]);
+    expect(calls).toBe(2);
+    expect(pool.stats()["acc-coalesce"]?.pooled).toBe(2);
+    pool.shutdown();
+  });
+
+  it("ensureWarm respects maxSessions when minIdle is higher", async () => {
+    let calls = 0;
+    const fakeConn = {
+      id: "cap-conn",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => {
+        calls += 1;
+        return {
+          sessionId: `sess-cap-${calls}`,
+          createdAt: Date.now(),
+          sessionCwd: undefined,
+          effectiveModel: "composer-2.5",
+        };
+      },
+      promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+    } as unknown as AcpConnection;
+
+    const pool = makePool({
+      minIdle: 5,
+      maxSessions: 2,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    await pool.ensureWarm("acc-cap", "composer-2.5");
+    expect(calls).toBe(2);
+    expect(pool.stats()["acc-cap"]?.pooled).toBe(2);
+    pool.shutdown();
+  });
+
+  it("ensureWarm does not create after shutdown during backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const fakeConn = {
+        id: "shutdown-conn",
+        isDead: false,
+        kill: vi.fn(),
+        cancel: vi.fn(async () => undefined),
+        createVirginSession: async () => {
+          calls += 1;
+          throw new Error("fail before shutdown");
+        },
+        promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+      } as unknown as AcpConnection;
+
+      const pool = makePool({
+        minIdle: 1,
+        maxSessions: 2,
+        defaultModel: "composer-2.5",
+        startConnection: async () => fakeConn,
+      });
+      const done = pool.ensureWarm("acc-shutdown", "composer-2.5");
+      for (let i = 0; i < 20 && calls < 1; i++) {
+        await Promise.resolve();
+      }
+      expect(calls).toBe(1);
+      pool.shutdown();
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(done).resolves.toBeUndefined();
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
