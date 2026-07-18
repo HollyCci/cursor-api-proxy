@@ -8,6 +8,7 @@ export type ParsedArgs = {
   login: boolean;
   accountsList: boolean;
   logout: boolean;
+  doctor: boolean;
   accountName: string;
   proxies: string[];
   resetHwid: boolean;
@@ -24,6 +25,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let login = false;
   let accountsList = false;
   let logout = false;
+  let doctor = false;
   let accountName = "";
   let proxies: string[] = [];
   let resetHwid = false;
@@ -52,6 +54,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "accounts" || arg === "list-accounts") {
       accountsList = true;
+      continue;
+    }
+
+    if (arg === "doctor") {
+      doctor = true;
       continue;
     }
 
@@ -120,6 +127,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     login,
     accountsList,
     logout,
+    doctor,
     accountName,
     proxies,
     resetHwid,
@@ -144,6 +152,9 @@ export function printHelp(version: string): void {
   );
   console.log("  logout <name>             Remove a saved Cursor account");
   console.log("  accounts                  List saved accounts with plan info");
+  console.log(
+    "  doctor                    Run preflight checks (agent bin, ACP, pool, accounts)",
+  );
   console.log(
     "  reset-hwid                Reset Cursor machine/telemetry IDs (anti-ban)",
   );

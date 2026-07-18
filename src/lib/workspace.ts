@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,40 +11,95 @@ export type WorkspaceResult = {
 };
 
 /**
+ * Empty per-account gateway HOME under tmp so Cursor does not load rules/MCP
+ * from the real user profile, while auth still comes from `CURSOR_CONFIG_DIR`.
+ */
+export function ensureGatewayHome(accountKey: string): string {
+  const hash = createHash("sha256")
+    .update(accountKey || "default")
+    .digest("hex")
+    .slice(0, 16);
+  const home = path.join(os.tmpdir(), "cursor-api-proxy-home", hash);
+  fs.mkdirSync(home, { recursive: true });
+  const cursorDir = path.join(home, ".cursor");
+  const rulesDir = path.join(cursorDir, "rules");
+  fs.mkdirSync(rulesDir, { recursive: true });
+  // Keep rules empty — never copy from the real user profile.
+  for (const name of fs.readdirSync(rulesDir)) {
+    try {
+      fs.rmSync(path.join(rulesDir, name), { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  const cliConfigPath = path.join(cursorDir, "cli-config.json");
+  fs.writeFileSync(
+    cliConfigPath,
+    JSON.stringify(
+      {
+        version: 1,
+        editor: { vimMode: false },
+        permissions: { allow: [], deny: [] },
+      },
+      null,
+      0,
+    ),
+    "utf8",
+  );
+  // Explicit empty MCP project file so CLI does not invent servers from HOME.
+  fs.writeFileSync(
+    path.join(cursorDir, "mcp.json"),
+    JSON.stringify({ mcpServers: {} }, null, 0),
+    "utf8",
+  );
+  if (process.platform === "win32") {
+    fs.mkdirSync(path.join(home, "AppData", "Roaming"), { recursive: true });
+    fs.mkdirSync(path.join(home, "AppData", "Local"), { recursive: true });
+  } else {
+    fs.mkdirSync(path.join(home, ".config"), { recursive: true });
+  }
+  return home;
+}
+
+function applyHomeOverrides(
+  overrides: Record<string, string>,
+  homeDir: string,
+): void {
+  overrides.HOME = homeDir;
+  overrides.USERPROFILE = homeDir;
+  if (process.platform === "win32") {
+    overrides.APPDATA = path.join(homeDir, "AppData", "Roaming");
+    overrides.LOCALAPPDATA = path.join(homeDir, "AppData", "Local");
+  } else {
+    overrides.XDG_CONFIG_HOME = path.join(homeDir, ".config");
+  }
+}
+
+/**
  * Env overrides for chat-only (isolated) workspace so the agent cannot load
  * rules from ~/.cursor or other user config paths.
  *
- * When `authConfigDir` is set (account pool), use it for `CURSOR_CONFIG_DIR` so the
- * CLI loads credentials from that profile.
- *
- * We do **not** override `HOME` / `USERPROFILE` / `XDG_*` in that case: the Cursor CLI
- * still resolves auth relative to the real user profile for `agent --print` / ask, and
- * a fake `HOME` makes login fail even when `CURSOR_CONFIG_DIR` points at the pool.
- * Without a pool, the temp `HOME` keeps rules from the real `~/.cursor` from loading.
+ * When `authConfigDir` is set (account pool), `CURSOR_CONFIG_DIR` points at that
+ * profile for credentials, while `HOME` / `USERPROFILE` still use an empty
+ * gateway home under `os.tmpdir()/cursor-api-proxy-home/<hash>`.
  */
 export function getChatOnlyEnvOverrides(
   workspaceDir: string,
   authConfigDir?: string,
 ): Record<string, string> {
-  const cursorDir = authConfigDir ?? path.join(workspaceDir, ".cursor");
-  const overrides: Record<string, string> = {
-    CURSOR_CONFIG_DIR: cursorDir,
-  };
-
   if (authConfigDir) {
+    const gatewayHome = ensureGatewayHome(authConfigDir);
+    const overrides: Record<string, string> = {
+      CURSOR_CONFIG_DIR: authConfigDir,
+    };
+    applyHomeOverrides(overrides, gatewayHome);
     return overrides;
   }
 
-  overrides.HOME = workspaceDir;
-  overrides.USERPROFILE = workspaceDir;
-  if (process.platform === "win32") {
-    const appDataRoaming = path.join(workspaceDir, "AppData", "Roaming");
-    const appDataLocal = path.join(workspaceDir, "AppData", "Local");
-    overrides.APPDATA = appDataRoaming;
-    overrides.LOCALAPPDATA = appDataLocal;
-  } else {
-    overrides.XDG_CONFIG_HOME = path.join(workspaceDir, ".config");
-  }
+  const overrides: Record<string, string> = {
+    CURSOR_CONFIG_DIR: path.join(workspaceDir, ".cursor"),
+  };
+  applyHomeOverrides(overrides, workspaceDir);
   return overrides;
 }
 

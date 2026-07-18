@@ -12,10 +12,8 @@ import {
   poolAccountKey,
   shutdownSessionPool,
 } from "./acp-session-pool.js";
-import { getChatOnlyEnvOverrides } from "./workspace.js";
-import * as path from "node:path";
+import { ensureGatewayHome, getChatOnlyEnvOverrides } from "./workspace.js";
 import * as os from "node:os";
-import { createHash } from "node:crypto";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -82,17 +80,12 @@ function maybeInitSessionPool(config: BridgeConfig): void {
       defaultModel: defaultWarm,
       fastModel: fastWarm,
       resolveAccountEnv: (accountKey) => {
-        // Isolate rules via empty HOME under a per-account hash dir; auth via config dir.
-        const hash = createHash("sha256")
-          .update(accountKey)
-          .digest("hex")
-          .slice(0, 16);
-        const home = path.join(os.tmpdir(), "cursor-api-proxy-pool-home", hash);
-        fs.mkdirSync(home, { recursive: true });
+        // Auth via CURSOR_CONFIG_DIR; HOME is an isolated gateway dir under tmp.
         if (accountKey === "default") {
-          return getChatOnlyEnvOverrides(home);
+          return getChatOnlyEnvOverrides(ensureGatewayHome("default"));
         }
-        return getChatOnlyEnvOverrides(home, accountKey);
+        // workspaceDir unused when authConfigDir is set (HOME from gateway hash).
+        return getChatOnlyEnvOverrides(os.tmpdir(), accountKey);
       },
     });
   }

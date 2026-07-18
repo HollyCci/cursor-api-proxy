@@ -45,6 +45,17 @@ npx cursor-api-proxy
 # or from repo: npm start / node dist/cli.js
 ```
 
+Preflight checks (agent bin, ACP, default model, session pool, account dirs):
+
+```bash
+npx cursor-api-proxy doctor
+```
+
+Chat-only / session-pool ACP spawns use an isolated gateway `HOME` under
+`os.tmpdir()/cursor-api-proxy-home/<hash>` (empty rules + `mcpServers: {}`) while
+`CURSOR_CONFIG_DIR` still points at the account auth directory. Real user
+`~/.cursor` rules/MCP are not loaded on cold or pooled paths.
+
 To expose on your network (e.g. Tailscale):
 
 ```bash

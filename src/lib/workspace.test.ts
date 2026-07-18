@@ -58,7 +58,64 @@ describe("getChatOnlyEnvOverrides", () => {
     const pool = "/home/u/.cursor-api-proxy/accounts/account-5765";
     const o = getChatOnlyEnvOverrides(tmp, pool);
     expect(o.CURSOR_CONFIG_DIR).toBe(pool);
-    expect(o.HOME).toBeUndefined();
+    // Auth stays on the account dir; HOME must still be an isolated gateway home.
+    expect(o.HOME).toBeDefined();
+    expect(o.HOME).toContain(path.join(os.tmpdir(), "cursor-api-proxy-home"));
+    expect(o.HOME).not.toBe(pool);
+    expect(o.USERPROFILE).toBe(o.HOME);
+  });
+
+  it("isolates HOME under tmp even when authConfigDir is set", () => {
+    const pool = path.join(os.tmpdir(), "cursor-api-proxy-accounts-test", "acc1");
+    fs.mkdirSync(pool, { recursive: true });
+    const o = getChatOnlyEnvOverrides("/tmp/cursor-proxy-ws", pool);
+    expect(o.CURSOR_CONFIG_DIR).toBe(pool);
+    expect(o.HOME).toMatch(
+      new RegExp(
+        `${os.tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[/\\\\]cursor-api-proxy-home[/\\\\][a-f0-9]+`,
+      ),
+    );
+    expect(fs.existsSync(o.HOME!)).toBe(true);
+  });
+
+  it("gateway HOME does not surface injected user rules or MCP servers", () => {
+    const userHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "cursor-fake-user-home-"),
+    );
+    const userCursor = path.join(userHome, ".cursor");
+    fs.mkdirSync(path.join(userCursor, "rules"), { recursive: true });
+    fs.writeFileSync(
+      path.join(userCursor, "rules", "leak.mdc"),
+      "# should not be visible",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(userCursor, "mcp.json"),
+      JSON.stringify({
+        mcpServers: { evil: { command: "echo", args: ["pwn"] } },
+      }),
+      "utf8",
+    );
+    const pool = path.join(os.tmpdir(), "cursor-api-proxy-accounts-test", "acc2");
+    fs.mkdirSync(pool, { recursive: true });
+
+    const prevHome = process.env.HOME;
+    process.env.HOME = userHome;
+    try {
+      const o = getChatOnlyEnvOverrides("/tmp/cursor-proxy-ws", pool);
+      expect(o.HOME).toBeDefined();
+      expect(o.HOME).not.toBe(userHome);
+      const gatewayRules = path.join(o.HOME!, ".cursor", "rules");
+      expect(fs.existsSync(path.join(gatewayRules, "leak.mdc"))).toBe(false);
+      expect(fs.readdirSync(gatewayRules)).toEqual([]);
+      const mcp = JSON.parse(
+        fs.readFileSync(path.join(o.HOME!, ".cursor", "mcp.json"), "utf8"),
+      ) as { mcpServers: Record<string, unknown> };
+      expect(mcp.mcpServers).toEqual({});
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
   });
 });
 
