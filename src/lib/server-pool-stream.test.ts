@@ -92,7 +92,11 @@ async function fetchServer(
     body?: string;
     headers?: Record<string, string>;
   } = {},
-): Promise<{ status: number; body: string }> {
+): Promise<{
+  status: number;
+  body: string;
+  headers: http.IncomingHttpHeaders;
+}> {
   const port = (server.address() as { port: number })?.port;
   const url = `http://127.0.0.1:${port}${path}`;
   return new Promise((resolve, reject) => {
@@ -106,6 +110,7 @@ async function fetchServer(
           resolve({
             status: res.statusCode ?? 0,
             body: Buffer.concat(chunks).toString("utf8"),
+            headers: res.headers,
           }),
         );
       },
@@ -305,5 +310,55 @@ describe("stream pool observation (HTTP)", () => {
     const snap = getPoolMetricsSnapshot();
     expect(snap.eligible).toBe(1);
     expect(snap.hits).toBe(1);
+  });
+
+  it("admission denial returns JSON 503 before SSE headers", async () => {
+    vi.mocked(runAgentStream).mockImplementationOnce(async () => ({
+      code: 1,
+      stderr: "cold_spawn_capacity",
+      admissionDenied: true,
+      retryAfterMs: 2000,
+      poolObservation: {
+        eligible: true,
+        hit: false,
+        missReason: "admission_denied",
+        idle: 0,
+        warming: 0,
+        checkedOut: 0,
+        coldSpawn: false,
+        accountKey: "/tmp/acc-admit",
+        modelKey: "composer-2.5",
+      },
+    }));
+
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const streamRes = await fetchServer(servers[0], "/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "claude-3-opus",
+        stream: true,
+        messages: [{ role: "user", content: "Hi" }],
+      }),
+    });
+    expect(streamRes.status).toBe(503);
+    expect(streamRes.headers["content-type"]).toMatch(/application\/json/);
+    expect(streamRes.headers["retry-after"]).toBe("2");
+    expect(streamRes.body).not.toMatch(/^data:/m);
+    const err = JSON.parse(streamRes.body) as {
+      error: { code: string };
+    };
+    expect(err.error.code).toBe("cold_spawn_capacity");
+
+    const snap = getPoolMetricsSnapshot();
+    expect(snap.eligible).toBe(1);
+    expect(snap.misses.admission_denied).toBe(1);
+    expect(snap.coldSpawns).toBe(0);
   });
 });

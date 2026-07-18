@@ -33,7 +33,7 @@ import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
 import { sanitizeMessages, sanitizeSystem } from "../sanitize.js";
 import {
-  getNextAccountConfigDir,
+  getNextAccountConfigDirForModel,
   reportRequestStart,
   reportRequestEnd,
   reportRequestSuccess,
@@ -55,6 +55,29 @@ import {
 
 function rejectNoUsableAccounts(res: http.ServerResponse): void {
   json(res, 503, { error: { ...NO_USABLE_ACCOUNTS_ERROR } });
+}
+
+function rejectColdSpawnCapacity(
+  res: http.ServerResponse,
+  retryAfterMs?: number,
+  extraHeaders?: http.OutgoingHttpHeaders,
+): void {
+  const retrySec = Math.max(1, Math.ceil((retryAfterMs ?? 1000) / 1000));
+  json(
+    res,
+    503,
+    {
+      error: {
+        type: "api_error",
+        message: "Cold ACP spawn capacity exceeded; retry shortly",
+        code: "cold_spawn_capacity",
+      },
+    },
+    {
+      ...extraHeaders,
+      "Retry-After": String(retrySec),
+    },
+  );
 }
 
 export type AnthropicMessagesCtx = {
@@ -244,42 +267,46 @@ export async function handleAnthropicMessages(
     const abortController = new AbortController();
     req.once("close", () => abortController.abort());
 
-    let configDir = getNextAccountConfigDir();
+    let configDir = getNextAccountConfigDirForModel(cursorModel);
     if (isAllAccountsDisabled(configDir)) {
       rejectNoUsableAccounts(res);
       return;
     }
 
-    writeSseHeaders(res, truncatedHeaders);
-    res.on("error", () => {
-      /* client disconnected mid-stream */
-    });
-
-    const writeEvent = (evt: object) => {
-      res.write(`data: ${JSON.stringify(evt)}\n\n`);
-    };
-
-    writeEvent({
-      type: "message_start",
-      message: {
-        id: msgId,
-        type: "message",
-        role: "assistant",
-        model: displayModel ?? cursorModel,
-        content: [],
-      },
-    });
-    writeEvent({
-      type: "content_block_start",
-      index: 0,
-      content_block: { type: "text", text: "" },
-    });
-
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
 
+    let sseCommitted = false;
+    const writeEvent = (evt: object) => {
+      res.write(`data: ${JSON.stringify(evt)}\n\n`);
+    };
+    const commitSse = () => {
+      if (sseCommitted || res.headersSent) return;
+      sseCommitted = true;
+      writeSseHeaders(res, truncatedHeaders);
+      res.on("error", () => {
+        /* client disconnected mid-stream */
+      });
+      writeEvent({
+        type: "message_start",
+        message: {
+          id: msgId,
+          type: "message",
+          role: "assistant",
+          model: displayModel ?? cursorModel,
+          content: [],
+        },
+      });
+      writeEvent({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      });
+    };
+
     const endPlanUpgradeStream = (contentStarted: boolean) => {
+      commitSse();
       if (
         !contentStarted &&
         getAccountStats().length > 0 &&
@@ -322,7 +349,7 @@ export async function handleAnthropicMessages(
           attempts++;
           if (attempts > 1) {
             reportRequestEnd(activeDir);
-            activeDir = getNextAccountConfigDir();
+            activeDir = getNextAccountConfigDirForModel(cursorModel);
             if (isAllAccountsDisabled(activeDir)) {
               recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
@@ -357,6 +384,7 @@ export async function handleAnthropicMessages(
                   return;
                 }
                 contentStarted = true;
+                commitSse();
                 writeEvent({
                   type: "content_block_delta",
                   index: 0,
@@ -373,6 +401,30 @@ export async function handleAnthropicMessages(
             if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
             reportRequestEnd(activeDir);
+
+            if (out.admissionDenied) {
+              recordFinalPoolObservation(streamPoolObs);
+              if (!res.headersSent) {
+                rejectColdSpawnCapacity(
+                  res,
+                  out.retryAfterMs,
+                  truncatedHeaders,
+                );
+              } else {
+                commitSse();
+                writeEvent({
+                  type: "error",
+                  error: {
+                    type: "api_error",
+                    message: "Cold ACP spawn capacity exceeded; retry shortly",
+                    code: "cold_spawn_capacity",
+                  },
+                });
+                res.end();
+              }
+              return;
+            }
+
             const signal = midUpgrade
               ? ("plan_upgrade" as const)
               : applyAgentAccountSignals(activeDir, {
@@ -383,7 +435,7 @@ export async function handleAnthropicMessages(
 
             if (abortController.signal.aborted) {
               recordFinalPoolObservation(streamPoolObs);
-              res.end();
+              if (res.headersSent) res.end();
               return;
             }
 
@@ -405,6 +457,7 @@ export async function handleAnthropicMessages(
                 out.code,
                 out.stderr,
               );
+              commitSse();
               writeEvent({
                 type: "error",
                 error: { type: "api_error", message: publicMsg },
@@ -417,6 +470,7 @@ export async function handleAnthropicMessages(
                 accumulated,
                 true,
               );
+              commitSse();
               writeEvent({ type: "content_block_stop", index: 0 });
               writeEvent({
                 type: "message_delta",
@@ -448,6 +502,7 @@ export async function handleAnthropicMessages(
                 endPlanUpgradeStream(contentStarted);
                 return;
               }
+              commitSse();
               writeEvent({
                 type: "error",
                 error: {
@@ -462,7 +517,7 @@ export async function handleAnthropicMessages(
               err,
             );
             recordFinalPoolObservation(streamPoolObs);
-            res.end();
+            if (res.headersSent) res.end();
             return;
           }
         }
@@ -489,6 +544,7 @@ export async function handleAnthropicMessages(
           return;
         }
         contentStarted = true;
+        commitSse();
         writeEvent({
           type: "content_block_delta",
           index: 0,
@@ -503,6 +559,7 @@ export async function handleAnthropicMessages(
           accumulated,
           true,
         );
+        commitSse();
         writeEvent({ type: "content_block_stop", index: 0 });
         writeEvent({
           type: "message_delta",
@@ -530,6 +587,25 @@ export async function handleAnthropicMessages(
         recordFinalPoolObservation(out.poolObservation);
         const latencyMs = Date.now() - streamStart;
         reportRequestEnd(configDir);
+
+        if (out.admissionDenied) {
+          if (!res.headersSent) {
+            rejectColdSpawnCapacity(res, out.retryAfterMs, truncatedHeaders);
+          } else {
+            commitSse();
+            writeEvent({
+              type: "error",
+              error: {
+                type: "api_error",
+                message: "Cold ACP spawn capacity exceeded; retry shortly",
+                code: "cold_spawn_capacity",
+              },
+            });
+            res.end();
+          }
+          return;
+        }
+
         const signal = midUpgrade
           ? ("plan_upgrade" as const)
           : applyAgentAccountSignals(configDir, {
@@ -539,7 +615,7 @@ export async function handleAnthropicMessages(
             });
 
         if (abortController.signal.aborted) {
-          res.end();
+          if (res.headersSent) res.end();
           return;
         }
         if (signal === "plan_upgrade") {
@@ -597,7 +673,7 @@ export async function handleAnthropicMessages(
   let lastSignal: ReturnType<typeof applyAgentAccountSignals> = "other";
 
   for (let attempts = 0; attempts < 2; attempts++) {
-    configDir = getNextAccountConfigDir();
+    configDir = getNextAccountConfigDirForModel(cursorModel);
     if (isAllAccountsDisabled(configDir)) {
       rejectNoUsableAccounts(res);
       return;
@@ -620,6 +696,10 @@ export async function handleAnthropicMessages(
     syncLatency = Date.now() - syncStart;
     reportRequestEnd(configDir);
 
+    if (out.admissionDenied) {
+      break;
+    }
+
     lastSignal = applyAgentAccountSignals(configDir, out);
     if (lastSignal === "plan_upgrade" && attempts < 1) {
       reportRequestError(configDir, syncLatency);
@@ -630,6 +710,11 @@ export async function handleAnthropicMessages(
 
   // One observation per HTTP request (final account attempt only).
   recordFinalPoolObservation(out.poolObservation);
+
+  if (out.admissionDenied) {
+    rejectColdSpawnCapacity(res, out.retryAfterMs, truncatedHeaders);
+    return;
+  }
 
   if (lastSignal === "plan_upgrade") {
     reportRequestError(configDir, syncLatency);

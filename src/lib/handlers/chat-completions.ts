@@ -32,7 +32,7 @@ import { resolveWorkspace } from "../workspace.js";
 import { buildBridgeContextPreamble, BRIDGE_AGENT_PROMPT_SEPARATOR } from "../bridge-context-preamble.js";
 import { sanitizeMessages } from "../sanitize.js";
 import {
-  getNextAccountConfigDir,
+  getNextAccountConfigDirForModel,
   reportRequestStart,
   reportRequestEnd,
   reportRequestSuccess,
@@ -78,6 +78,29 @@ function writeChatSseError(
 
 function rejectNoUsableAccounts(res: http.ServerResponse): void {
   json(res, 503, { error: { ...NO_USABLE_ACCOUNTS_ERROR } });
+}
+
+function rejectColdSpawnCapacity(
+  res: http.ServerResponse,
+  retryAfterMs?: number,
+  extraHeaders?: http.OutgoingHttpHeaders,
+): void {
+  const retrySec = Math.max(1, Math.ceil((retryAfterMs ?? 1000) / 1000));
+  json(
+    res,
+    503,
+    {
+      error: {
+        message: "Cold ACP spawn capacity exceeded; retry shortly",
+        code: "cold_spawn_capacity",
+        type: "api_error",
+      },
+    },
+    {
+      ...extraHeaders,
+      "Retry-After": String(retrySec),
+    },
+  );
 }
 
 function usageFor(prompt: string, completion: string) {
@@ -273,7 +296,7 @@ export async function handleChatCompletions(
     const abortController = new AbortController();
     req.once("close", () => abortController.abort());
 
-    let configDir = getNextAccountConfigDir();
+    let configDir = getNextAccountConfigDirForModel(cursorModel);
     if (isAllAccountsDisabled(configDir)) {
       rejectNoUsableAccounts(res);
       return;
@@ -283,12 +306,20 @@ export async function handleChatCompletions(
     reportRequestStart(configDir);
     const streamStart = Date.now();
 
-    writeSseHeaders(res, truncatedHeaders);
-    res.on("error", () => {
-      /* client disconnected mid-stream */
-    });
+    // Defer SSE headers until first chunk or confirmed run so admission
+    // denials can still return JSON 503 + Retry-After.
+    let sseCommitted = false;
+    const commitSse = () => {
+      if (sseCommitted || res.headersSent) return;
+      sseCommitted = true;
+      writeSseHeaders(res, truncatedHeaders);
+      res.on("error", () => {
+        /* client disconnected mid-stream */
+      });
+    };
 
     const endPlanUpgradeStream = (contentStarted: boolean) => {
+      commitSse();
       if (
         !contentStarted &&
         getAccountStats().length > 0 &&
@@ -324,7 +355,7 @@ export async function handleChatCompletions(
           attempts++;
           if (attempts > 1) {
             reportRequestEnd(activeDir);
-            activeDir = getNextAccountConfigDir();
+            activeDir = getNextAccountConfigDirForModel(cursorModel);
             if (isAllAccountsDisabled(activeDir)) {
               recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
@@ -369,6 +400,27 @@ export async function handleChatCompletions(
             if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
             reportRequestEnd(activeDir);
+
+            if (out.admissionDenied) {
+              recordFinalPoolObservation(streamPoolObs);
+              if (!res.headersSent) {
+                rejectColdSpawnCapacity(
+                  res,
+                  out.retryAfterMs,
+                  truncatedHeaders,
+                );
+              } else {
+                commitSse();
+                writeChatSseError(
+                  res,
+                  "Cold ACP spawn capacity exceeded; retry shortly",
+                  "cold_spawn_capacity",
+                );
+                res.end();
+              }
+              return;
+            }
+
             const signal = applyAgentAccountSignals(activeDir, {
               code: out.code,
               stderr: out.stderr,
@@ -377,7 +429,7 @@ export async function handleChatCompletions(
 
             if (abortController.signal.aborted) {
               recordFinalPoolObservation(streamPoolObs);
-              res.end();
+              if (res.headersSent) res.end();
               return;
             }
 
@@ -399,6 +451,7 @@ export async function handleChatCompletions(
                 out.code,
                 out.stderr,
               );
+              commitSse();
               writeChatSseError(res, publicMsg, "cursor_cli_error");
               logAccountStats(config.verbose, getAccountStats());
               recordFinalPoolObservation(streamPoolObs);
@@ -453,6 +506,7 @@ export async function handleChatCompletions(
                 ],
               });
             }
+            commitSse();
             writeBufferedEvents(res, buffered);
             recordFinalPoolObservation(streamPoolObs);
             res.end();
@@ -474,6 +528,7 @@ export async function handleChatCompletions(
                 endPlanUpgradeStream(false);
                 return;
               }
+              commitSse();
               writeChatSseError(
                 res,
                 "The Cursor agent stream failed. See server logs for details.",
@@ -509,7 +564,7 @@ export async function handleChatCompletions(
           attempts++;
           if (attempts > 1) {
             reportRequestEnd(activeDir);
-            activeDir = getNextAccountConfigDir();
+            activeDir = getNextAccountConfigDirForModel(cursorModel);
             if (isAllAccountsDisabled(activeDir)) {
               recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
@@ -530,6 +585,7 @@ export async function handleChatCompletions(
             const delta = thoughtStreamDelta(chunk, config.thoughtMode);
             if (!delta) return;
             contentStarted = true;
+            commitSse();
             res.write(
               `data: ${JSON.stringify({
                 id,
@@ -562,6 +618,7 @@ export async function handleChatCompletions(
                   return;
                 }
                 contentStarted = true;
+                commitSse();
                 res.write(
                   `data: ${JSON.stringify({
                     id,
@@ -588,6 +645,27 @@ export async function handleChatCompletions(
             if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
             reportRequestEnd(activeDir);
+
+            if (out.admissionDenied) {
+              recordFinalPoolObservation(streamPoolObs);
+              if (!res.headersSent) {
+                rejectColdSpawnCapacity(
+                  res,
+                  out.retryAfterMs,
+                  truncatedHeaders,
+                );
+              } else {
+                commitSse();
+                writeChatSseError(
+                  res,
+                  "Cold ACP spawn capacity exceeded; retry shortly",
+                  "cold_spawn_capacity",
+                );
+                res.end();
+              }
+              return;
+            }
+
             const signal = midUpgrade
               ? ("plan_upgrade" as const)
               : applyAgentAccountSignals(activeDir, {
@@ -598,7 +676,7 @@ export async function handleChatCompletions(
 
             if (abortController.signal.aborted) {
               recordFinalPoolObservation(streamPoolObs);
-              res.end();
+              if (res.headersSent) res.end();
               return;
             }
 
@@ -620,6 +698,7 @@ export async function handleChatCompletions(
                 out.code,
                 out.stderr,
               );
+              commitSse();
               writeChatSseError(res, publicMsg, "cursor_cli_error");
               logAccountStats(config.verbose, getAccountStats());
               recordFinalPoolObservation(streamPoolObs);
@@ -641,6 +720,7 @@ export async function handleChatCompletions(
               1,
               Math.round(accumulated.length / 4),
             );
+            commitSse();
             res.write(
               `data: ${JSON.stringify({
                 id,
@@ -678,6 +758,7 @@ export async function handleChatCompletions(
                 endPlanUpgradeStream(contentStarted);
                 return;
               }
+              commitSse();
               writeChatSseError(
                 res,
                 "The Cursor agent stream failed. See server logs for details.",
@@ -716,6 +797,7 @@ export async function handleChatCompletions(
           return;
         }
         contentStarted = true;
+        commitSse();
         res.write(
           `data: ${JSON.stringify({
             id,
@@ -741,6 +823,7 @@ export async function handleChatCompletions(
           1,
           Math.round(accumulated.length / 4),
         );
+        commitSse();
         res.write(
           `data: ${JSON.stringify({
             id,
@@ -776,6 +859,22 @@ export async function handleChatCompletions(
         recordFinalPoolObservation(out.poolObservation);
         const latencyMs = Date.now() - streamStart;
         reportRequestEnd(configDir);
+
+        if (out.admissionDenied) {
+          if (!res.headersSent) {
+            rejectColdSpawnCapacity(res, out.retryAfterMs, truncatedHeaders);
+          } else {
+            commitSse();
+            writeChatSseError(
+              res,
+              "Cold ACP spawn capacity exceeded; retry shortly",
+              "cold_spawn_capacity",
+            );
+            res.end();
+          }
+          return;
+        }
+
         const signal = midUpgrade
           ? ("plan_upgrade" as const)
           : applyAgentAccountSignals(configDir, {
@@ -785,7 +884,7 @@ export async function handleChatCompletions(
             });
 
         if (abortController.signal.aborted) {
-          res.end();
+          if (res.headersSent) res.end();
           return;
         }
         if (signal === "plan_upgrade") {
@@ -846,7 +945,7 @@ export async function handleChatCompletions(
   let lastSignal: ReturnType<typeof applyAgentAccountSignals> = "other";
 
   for (let attempts = 0; attempts < 2; attempts++) {
-    configDir = getNextAccountConfigDir();
+    configDir = getNextAccountConfigDirForModel(cursorModel);
     if (attempts === 0) latency.mark("account_select_end");
     if (isAllAccountsDisabled(configDir)) {
       latency.mark("shape_done");
@@ -874,6 +973,10 @@ export async function handleChatCompletions(
     syncLatency = Date.now() - syncStart;
     reportRequestEnd(configDir);
 
+    if (out.admissionDenied) {
+      break;
+    }
+
     lastSignal = applyAgentAccountSignals(configDir, out);
     if (lastSignal === "plan_upgrade" && attempts < 1) {
       reportRequestError(configDir, syncLatency);
@@ -884,6 +987,16 @@ export async function handleChatCompletions(
 
   // One observation per HTTP request (final account attempt only).
   recordFinalPoolObservation(out.poolObservation);
+
+  if (out.admissionDenied) {
+    latency.mark("shape_done");
+    latency.logLine({ ok: false, model: displayModel });
+    rejectColdSpawnCapacity(res, out.retryAfterMs, {
+      ...truncatedHeaders,
+      "X-Cursor-Proxy-Waterfall": latency.headerValue(),
+    });
+    return;
+  }
 
   if (lastSignal === "plan_upgrade") {
     reportRequestError(configDir, syncLatency);
