@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 
+import { shouldDisableForPlanUpgrade } from "./account-failure.js";
 import { runAcpStream, runAcpSync } from "./acp-client.js";
 import type { BridgeConfig } from "./config.js";
 import type { CursorExecutionMode } from "./execution-mode.js";
@@ -23,7 +24,40 @@ export type AgentRunResult = {
   latencyMarks?: Record<string, number>;
   /** True when served by virgin session pool (not a latency timestamp). */
   poolHit?: boolean;
+  /** Combined text safe for account-failure classification */
+  failureText?: string;
 };
+
+/** Pool prompt catch → quarantine signal or null (cold fallback). Exported for unit tests. */
+export function agentResultFromPoolPromptError(
+  err: unknown,
+): AgentRunResult | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (shouldDisableForPlanUpgrade({ text: msg, fromErrorChannel: true })) {
+    return {
+      code: 1,
+      stdout: "",
+      stderr: msg,
+      failureText: msg,
+      poolHit: true,
+    };
+  }
+  return null;
+}
+
+function agentResultFromAcpError(err: unknown): AgentRunResult {
+  const msg = err instanceof Error ? err.message : String(err);
+  return { code: 1, stdout: "", stderr: msg, failureText: msg };
+}
+
+function appendErrorToStderr(
+  stderr: string,
+  err: unknown,
+): { code: number; stderr: string } {
+  const msg = err instanceof Error ? err.message : String(err);
+  const combined = [stderr, msg].filter(Boolean).join("\n");
+  return { code: 1, stderr: combined };
+}
 
 function acpArgsWithModel(acpArgs: string[], model: string): string[] {
   const i = acpArgs.indexOf("acp");
@@ -112,17 +146,26 @@ async function trySessionPoolSync(
       code: 0,
       stdout: out.stdout,
       stderr: "",
+      failureText: out.stdout,
       ...(out.reasoning ? { reasoning: out.reasoning } : {}),
       latencyMarks: out.latencyMarks,
       poolHit: true,
     };
   } catch (err) {
-    console.warn(`[acp-pool] prompt failed, discard + cold fallback:`, err);
     try {
       await checkout.discard();
     } catch {
       /* ignore */
     }
+    const planFail = agentResultFromPoolPromptError(err);
+    if (planFail) {
+      console.warn(
+        `[acp-pool] plan-upgrade on prompt, skip cold fallback:`,
+        err,
+      );
+      return planFail;
+    }
+    console.warn(`[acp-pool] prompt failed, discard + cold fallback:`, err);
     return null;
   }
 }
@@ -176,17 +219,29 @@ export async function runAgentSync(
       skipAuthenticate: config.acpSkipAuthenticate,
       rawDebug: config.acpRawDebug,
       signal,
-    }).then((out) => {
-      cacheTokenForAccount(configDir);
-      if (tempDir) {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch {
-          /* ignore */
+    })
+      .then((out) => {
+        cacheTokenForAccount(configDir);
+        if (tempDir) {
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          } catch {
+            /* ignore */
+          }
         }
-      }
-      return out;
-    });
+        const failureText = out.stderr || out.stdout || undefined;
+        return failureText ? { ...out, failureText } : out;
+      })
+      .catch((err) => {
+        if (tempDir) {
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          } catch {
+            /* ignore */
+          }
+        }
+        return agentResultFromAcpError(err);
+      });
   }
   const runEnvOverrides = effectiveChatOnly
     ? getChatOnlyEnvOverrides(workspaceDir, configDir)
@@ -253,17 +308,28 @@ export function runAgentStream(
       },
       onLine,
       onThought,
-    ).then((result) => {
-      cacheTokenForAccount(configDir);
-      if (tempDir) {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch {
-          /* ignore */
+    )
+      .then((result) => {
+        cacheTokenForAccount(configDir);
+        if (tempDir) {
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          } catch {
+            /* ignore */
+          }
         }
-      }
-      return result;
-    });
+        return result;
+      })
+      .catch((err) => {
+        if (tempDir) {
+          try {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          } catch {
+            /* ignore */
+          }
+        }
+        return appendErrorToStderr("", err);
+      });
   }
   const streamEnvOverrides = effectiveChatOnly
     ? getChatOnlyEnvOverrides(workspaceDir, configDir)
