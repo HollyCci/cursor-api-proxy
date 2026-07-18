@@ -38,6 +38,8 @@ export type SessionPoolConfig = {
   spawnOptions?: { windowsVerbatimArguments?: boolean };
   skipAuthenticate?: boolean;
   defaultModel?: string;
+  /** When set, warm slots for this model use requireExactModel (cursor-fast lane). */
+  fastModel?: string;
   /** Test seam: override ACP connection start (avoids real/fake spawn). */
   startConnection?: (opts: AcpConnectionOptions) => Promise<AcpConnection>;
 };
@@ -471,9 +473,16 @@ export class VirginSessionPool {
     try {
       const conn = await this.getOrStartConn(accountKey);
       warming.conn = conn;
+      const fastKey = this.cfg.fastModel
+        ? normalizePoolModelKey(this.cfg.fastModel, this.cfg.defaultModel)
+        : undefined;
+      const requireExactModel = Boolean(
+        fastKey && modelKey === fastKey && modelKey !== "__default__",
+      );
       const virgin = await conn.createVirginSession(
         modelKey === "__default__" ? undefined : modelKey,
         this.cfg.defaultModel,
+        { requireExactModel },
       );
       warming.sessionId = virgin.sessionId;
       warming.createdAt = virgin.createdAt;

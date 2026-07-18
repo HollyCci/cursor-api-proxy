@@ -3,6 +3,8 @@
  * so clients like Claude Code can send "claude-opus-4-6" and the proxy uses "opus-4.6".
  */
 
+import type { ModelLane } from "./resolve-model.js";
+
 export type ModelResolutionDecision = {
   requested?: string;
   mapped?: string;
@@ -11,6 +13,10 @@ export type ModelResolutionDecision = {
   validated: boolean;
   fallbackUsed: boolean;
   fallbackReason?: string;
+  lane?: ModelLane;
+  /** False only for fail-closed fast lane failures. */
+  ok: boolean;
+  error?: "cursor_fast_unavailable";
 };
 
 /** Anthropic-style model name (any case) -> Cursor CLI model id */
@@ -93,16 +99,77 @@ function matchAvailableModel(
   return byLower.get(candidate.toLowerCase());
 }
 
+function fastUnavailable(
+  partial: Omit<ModelResolutionDecision, "ok" | "error" | "fallbackUsed" | "validated"> & {
+    fallbackUsed?: boolean;
+    validated?: boolean;
+  },
+): ModelResolutionDecision {
+  return {
+    ...partial,
+    validated: false,
+    fallbackUsed: false,
+    ok: false,
+    error: "cursor_fast_unavailable",
+  };
+}
+
 export function resolveModelForExecution(args: {
   requested: string | undefined;
   defaultModel: string;
   availableCursorIds: string[];
+  /** When "fast", never fall back to another model. */
+  lane?: ModelLane;
 }): ModelResolutionDecision {
+  const lane = args.lane;
   const requested = args.requested?.trim();
   const requestedWasDefault = requested === "default";
   const mapped = requestedWasDefault
     ? "default"
     : resolveToCursorModel(requested) ?? args.defaultModel;
+
+  if (lane === "fast") {
+    if (mapped === "default") {
+      return fastUnavailable({
+        requested,
+        mapped,
+        final: mapped,
+        requestedWasDefault,
+        lane,
+      });
+    }
+    if (!args.availableCursorIds.length) {
+      return fastUnavailable({
+        requested,
+        mapped,
+        final: mapped,
+        requestedWasDefault,
+        lane,
+        fallbackReason: "catalog_unavailable",
+      });
+    }
+    const matched = matchAvailableModel(mapped, args.availableCursorIds);
+    if (!matched) {
+      return fastUnavailable({
+        requested,
+        mapped,
+        final: mapped,
+        requestedWasDefault,
+        lane,
+        fallbackReason: "mapped_model_unavailable",
+      });
+    }
+    return {
+      requested,
+      mapped,
+      final: matched,
+      requestedWasDefault,
+      validated: true,
+      fallbackUsed: false,
+      lane,
+      ok: true,
+    };
+  }
 
   if (mapped === "default") {
     return {
@@ -112,6 +179,8 @@ export function resolveModelForExecution(args: {
       requestedWasDefault,
       validated: true,
       fallbackUsed: false,
+      lane,
+      ok: true,
     };
   }
 
@@ -124,6 +193,8 @@ export function resolveModelForExecution(args: {
       requestedWasDefault,
       validated: true,
       fallbackUsed: false,
+      lane,
+      ok: true,
     };
   }
 
@@ -137,6 +208,8 @@ export function resolveModelForExecution(args: {
       validated: true,
       fallbackUsed: true,
       fallbackReason: "mapped_model_unavailable",
+      lane,
+      ok: true,
     };
   }
 
@@ -150,6 +223,8 @@ export function resolveModelForExecution(args: {
       validated: true,
       fallbackUsed: true,
       fallbackReason: "mapped_model_unavailable",
+      lane,
+      ok: true,
     };
   }
 
@@ -163,6 +238,8 @@ export function resolveModelForExecution(args: {
       validated: true,
       fallbackUsed: true,
       fallbackReason: "mapped_model_unavailable",
+      lane,
+      ok: true,
     };
   }
 
@@ -174,6 +251,8 @@ export function resolveModelForExecution(args: {
     validated: false,
     fallbackUsed: false,
     fallbackReason: "catalog_unavailable",
+    lane,
+    ok: true,
   };
 }
 

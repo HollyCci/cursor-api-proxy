@@ -29,6 +29,11 @@ export type AcpRunOptions = {
   rawDebug?: boolean;
   /** When aborted, the ACP child is killed (same as CLI path). */
   signal?: AbortSignal;
+  /**
+   * When true with `model` set, refuse silent session-default fallback if the
+   * catalog lacks the model or set_config_option fails (cursor-fast lane).
+   */
+  requireExactModel?: boolean;
 };
 
 export type AcpSyncResult = {
@@ -228,17 +233,29 @@ export type AcpAvailableModel = { modelId: string; name: string };
 
 /**
  * Map OpenAI-style display name to Cursor ACP `modelId` (e.g. `composer-2` → `composer-2[fast=true]`).
- * If `availableModels` is missing or empty, returns `displayName` unchanged.
- * If the list is non-empty but no row matches `name`, logs via debug and falls back to session default.
+ * If `availableModels` is missing or empty, returns `displayName` unchanged (unless strict).
+ * If the list is non-empty but no row matches `name`, logs via debug and falls back to session default
+ * (unless strict, which throws).
  * Duplicate `name` entries: first match wins.
  */
 export function resolveAcpModelConfigValue(
   displayName: string,
   availableModels: AcpAvailableModel[] | undefined,
+  opts?: { strict?: boolean },
 ): string {
-  if (!availableModels?.length) return displayName;
+  if (!availableModels?.length) {
+    if (opts?.strict) {
+      throw new Error(
+        `ACP model unavailable: empty catalog for ${displayName}`,
+      );
+    }
+    return displayName;
+  }
   const hit = availableModels.find((m) => m.name === displayName);
   if (!hit) {
+    if (opts?.strict) {
+      throw new Error(`ACP model unavailable: no catalog match for ${displayName}`);
+    }
     debugAcp(
       "ACP model: no catalog match for display name %j; falling back to default[]",
       displayName,
@@ -477,6 +494,7 @@ export function runAcpSync(
           const resolvedModelId = resolveAcpModelConfigValue(
             opts.model,
             sessionResult.models?.availableModels,
+            { strict: opts.requireExactModel },
           );
           if (resolvedModelId !== "default" && resolvedModelId !== "default[]") {
             debugAcp("ACP step: session/set_config_option (model)");
@@ -487,6 +505,10 @@ export function runAcpSync(
               { sessionId, configId: "model", value: resolvedModelId },
               pending,
               requestTimeoutMs,
+            );
+          } else if (opts.requireExactModel) {
+            throw new Error(
+              `ACP model unavailable: cannot pin ${opts.model} (resolved ${resolvedModelId})`,
             );
           } else {
             debugAcp(
@@ -699,6 +721,7 @@ export function runAcpStream(
           const resolvedModelId = resolveAcpModelConfigValue(
             opts.model,
             sessionResult.models?.availableModels,
+            { strict: opts.requireExactModel },
           );
           if (resolvedModelId !== "default" && resolvedModelId !== "default[]") {
             debugAcp("ACP step: session/set_config_option (model)");
@@ -709,6 +732,10 @@ export function runAcpStream(
               { sessionId, configId: "model", value: resolvedModelId },
               pending,
               requestTimeoutMs,
+            );
+          } else if (opts.requireExactModel) {
+            throw new Error(
+              `ACP model unavailable: cannot pin ${opts.model} (resolved ${resolvedModelId})`,
             );
           } else {
             debugAcp(

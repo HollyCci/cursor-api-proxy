@@ -65,41 +65,74 @@ export function startBridgeServer(
 
 function maybeInitSessionPool(config: BridgeConfig): void {
   if (!config.sessionPool) return;
-  if (getSessionPool()?.enabled) return;
-  const model =
+  const defaultWarm =
     config.defaultModel === "default" ? undefined : config.defaultModel;
-  initSessionPool({
-    enabled: true,
-    minIdle: config.sessionPoolMinIdle,
-    maxSessions: config.sessionPoolMaxSessions,
-    idleTtlMs: config.sessionPoolIdleTtlMs,
-    command: config.acpCommand,
-    args: config.acpArgs,
-    env: config.acpEnv,
-    spawnOptions: config.acpSpawnOptions,
-    skipAuthenticate: config.acpSkipAuthenticate,
-    defaultModel: model,
-    resolveAccountEnv: (accountKey) => {
-      // Isolate rules via empty HOME under a per-account hash dir; auth via config dir.
-      const hash = createHash("sha256")
-        .update(accountKey)
-        .digest("hex")
-        .slice(0, 16);
-      const home = path.join(os.tmpdir(), "cursor-api-proxy-pool-home", hash);
-      fs.mkdirSync(home, { recursive: true });
-      if (accountKey === "default") {
-        return getChatOnlyEnvOverrides(home);
-      }
-      return getChatOnlyEnvOverrides(home, accountKey);
-    },
-  });
+  const fastWarm = config.cursorFastModel?.trim() || undefined;
+  if (!getSessionPool()?.enabled) {
+    initSessionPool({
+      enabled: true,
+      minIdle: config.sessionPoolMinIdle,
+      maxSessions: config.sessionPoolMaxSessions,
+      idleTtlMs: config.sessionPoolIdleTtlMs,
+      command: config.acpCommand,
+      args: config.acpArgs,
+      env: config.acpEnv,
+      spawnOptions: config.acpSpawnOptions,
+      skipAuthenticate: config.acpSkipAuthenticate,
+      defaultModel: defaultWarm,
+      fastModel: fastWarm,
+      resolveAccountEnv: (accountKey) => {
+        // Isolate rules via empty HOME under a per-account hash dir; auth via config dir.
+        const hash = createHash("sha256")
+          .update(accountKey)
+          .digest("hex")
+          .slice(0, 16);
+        const home = path.join(os.tmpdir(), "cursor-api-proxy-pool-home", hash);
+        fs.mkdirSync(home, { recursive: true });
+        if (accountKey === "default") {
+          return getChatOnlyEnvOverrides(home);
+        }
+        return getChatOnlyEnvOverrides(home, accountKey);
+      },
+    });
+  }
   const p = getSessionPool();
+  if (!p?.enabled) return;
+
+  // Deduped prewarm targets; empty → one warm with session default (undefined).
+  const targets: Array<string | undefined> = [];
+  const seen = new Set<string>();
+  for (const m of [defaultWarm, fastWarm]) {
+    if (m == null || m === "") {
+      continue;
+    }
+    if (seen.has(m)) continue;
+    seen.add(m);
+    targets.push(m);
+  }
+  if (targets.length === 0) targets.push(undefined);
+
+  if (
+    defaultWarm &&
+    fastWarm &&
+    defaultWarm !== fastWarm &&
+    config.sessionPoolMaxSessions < 2 * config.sessionPoolMinIdle
+  ) {
+    console.warn(
+      `[acp-pool] maxSessions=${config.sessionPoolMaxSessions} < 2*minIdle=${
+        2 * config.sessionPoolMinIdle
+      }; default+fast prewarm may contend for capacity`,
+    );
+  }
+
   const keys =
     config.configDirs?.length > 0
       ? config.configDirs.map((d) => poolAccountKey(d))
       : ["default"];
   for (const k of keys) {
-    void p?.ensureWarm(k, model);
+    for (const m of targets) {
+      void p.ensureWarm(k, m);
+    }
   }
 }
 

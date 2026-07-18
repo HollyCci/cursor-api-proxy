@@ -209,7 +209,7 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 
 Notes:
 
-- Request model aliases **`cursor-fast`** / **`fast`** resolve to `CURSOR_BRIDGE_FAST_MODEL` (default `composer-2.5`). Sticky last-model reuse is **opt-in** via `CURSOR_BRIDGE_STICKY_MODEL=true`; by default an omitted model uses only `CURSOR_BRIDGE_DEFAULT_MODEL`.
+- Request model aliases **`cursor-fast`** / **`fast`** resolve to `CURSOR_BRIDGE_FAST_MODEL` (default `composer-2.5`) and are **fail-closed**: if that model is missing from the Cursor catalog (or ACP cannot pin it), the proxy returns **503** `cursor_fast_unavailable` instead of silently substituting another model. Session-pool prewarm covers both `CURSOR_BRIDGE_DEFAULT_MODEL` and the fast model (deduped when identical). Sticky last-model reuse is **opt-in** via `CURSOR_BRIDGE_STICKY_MODEL=true`; by default an omitted model uses only `CURSOR_BRIDGE_DEFAULT_MODEL`.
 - The `login` subcommand depends on `chrome-launcher`; its dependency tree may pull typings into production installs. Prefer `npm audit` before release; upstream may move types to `devDependencies` over time.
 - `--tailscale` changes the default host to `0.0.0.0` only when `CURSOR_BRIDGE_HOST` is not already set.
 - ACP `session/request_permission` uses `reject-once` (least-privilege) so the agent cannot grant file/tool access; intentional for chat-only mode.

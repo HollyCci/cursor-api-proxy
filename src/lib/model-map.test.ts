@@ -26,6 +26,7 @@ describe("resolveModelForExecution", () => {
     expect(decision.final).toBe("sonnet-4.5");
     expect(decision.fallbackUsed).toBe(false);
     expect(decision.validated).toBe(true);
+    expect(decision.ok).toBe(true);
   });
 
   it("falls back to default model when mapped model is unavailable", () => {
@@ -37,6 +38,7 @@ describe("resolveModelForExecution", () => {
     expect(decision.final).toBe("auto");
     expect(decision.fallbackUsed).toBe(true);
     expect(decision.fallbackReason).toBe("mapped_model_unavailable");
+    expect(decision.ok).toBe(true);
   });
 
   it("prefers explicit default request", () => {
@@ -47,5 +49,42 @@ describe("resolveModelForExecution", () => {
     });
     expect(decision.final).toBe("default");
     expect(decision.requestedWasDefault).toBe(true);
+    expect(decision.ok).toBe(true);
+  });
+
+  it("fast lane fails closed when target missing from catalog", () => {
+    const decision = resolveModelForExecution({
+      requested: "composer-2.5",
+      defaultModel: "auto",
+      availableCursorIds: ["auto", "gpt-5.2"],
+      lane: "fast",
+    });
+    expect(decision.ok).toBe(false);
+    expect(decision.error).toBe("cursor_fast_unavailable");
+    expect(decision.fallbackUsed).toBe(false);
+    expect(decision.final).toBe("composer-2.5");
+  });
+
+  it("fast lane fails closed on empty catalog", () => {
+    const decision = resolveModelForExecution({
+      requested: "composer-2.5",
+      defaultModel: "auto",
+      availableCursorIds: [],
+      lane: "fast",
+    });
+    expect(decision.ok).toBe(false);
+    expect(decision.error).toBe("cursor_fast_unavailable");
+  });
+
+  it("fast lane succeeds on exact catalog match", () => {
+    const decision = resolveModelForExecution({
+      requested: "composer-2.5",
+      defaultModel: "auto",
+      availableCursorIds: ["auto", "composer-2.5"],
+      lane: "fast",
+    });
+    expect(decision.ok).toBe(true);
+    expect(decision.final).toBe("composer-2.5");
+    expect(decision.fallbackUsed).toBe(false);
   });
 });

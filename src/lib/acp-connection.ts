@@ -301,11 +301,26 @@ export class AcpConnection {
   async createVirginSession(
     model: string | undefined,
     defaultModel?: string,
+    opts?: { requireExactModel?: boolean },
   ): Promise<VirginSession> {
     const sessionCwd = fs.mkdtempSync(
       path.join(os.tmpdir(), "cursor-api-proxy-sess-"),
     );
     const effectiveModel = normalizePoolModelKey(model, defaultModel);
+    const cleanupFailed = async (sessionId?: string) => {
+      if (sessionId) {
+        try {
+          await this.cancel(sessionId);
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        fs.rmSync(sessionCwd, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    };
 
     const result = (await this.request("session/new", {
       cwd: sessionCwd,
@@ -316,19 +331,22 @@ export class AcpConnection {
     };
     const sessionId = result.sessionId;
     if (!sessionId) {
-      try {
-        fs.rmSync(sessionCwd, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
+      await cleanupFailed();
       throw new Error("ACP session/new missing sessionId");
     }
 
     if (effectiveModel !== "__default__") {
-      const resolved = resolveAcpModelConfigValue(
-        effectiveModel,
-        result.models?.availableModels,
-      );
+      let resolved: string;
+      try {
+        resolved = resolveAcpModelConfigValue(
+          effectiveModel,
+          result.models?.availableModels,
+          { strict: opts?.requireExactModel },
+        );
+      } catch (err) {
+        await cleanupFailed(sessionId);
+        throw err;
+      }
       if (resolved !== "default" && resolved !== "default[]") {
         try {
           await this.request("session/set_config_option", {
@@ -337,8 +355,17 @@ export class AcpConnection {
             value: resolved,
           });
         } catch (err) {
+          if (opts?.requireExactModel) {
+            await cleanupFailed(sessionId);
+            throw err;
+          }
           debugAcp("set_config_option model failed: %s", err);
         }
+      } else if (opts?.requireExactModel) {
+        await cleanupFailed(sessionId);
+        throw new Error(
+          `ACP model unavailable: cannot pin ${effectiveModel} (resolved ${resolved})`,
+        );
       }
     }
 

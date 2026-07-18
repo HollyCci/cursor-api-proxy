@@ -127,21 +127,34 @@ export async function handleChatCompletions(
   const { config, lastRequestedModelRef, modelCacheRef } = ctx;
   const body = JSON.parse(rawBody || "{}") as OpenAiChatCompletionRequest;
   const requested = normalizeModelId(body.model);
-  const model = resolveModel(requested, lastRequestedModelRef, config);
+  const resolvedReq = resolveModel(requested, lastRequestedModelRef, config);
   const models = await getCachedCursorModels(config, modelCacheRef);
   const decision = resolveModelForExecution({
-    requested: model,
+    requested: resolvedReq.model,
     defaultModel: config.defaultModel,
     availableCursorIds: models.map((m) => m.id),
+    lane: resolvedReq.lane,
   });
+  if (!decision.ok) {
+    json(
+      res,
+      503,
+      {
+        error: {
+          message: `Cursor fast model unavailable: ${resolvedReq.model}`,
+          code: "cursor_fast_unavailable",
+        },
+      },
+    );
+    return;
+  }
   const cursorModel = decision.final;
+  const model = cursorModel;
+  const requireExactModel = resolvedReq.lane === "fast";
   rememberResolvedModel(cursorModel, lastRequestedModelRef);
   logModelResolution(config.verbose, decision);
-  // When request is "default", use defaultModel for response display (dashboard) if set; else echo "default"
-  const displayModel =
-    decision.requestedWasDefault && config.defaultModel !== "default"
-      ? config.defaultModel
-      : model;
+  // Report the model actually executed (never a silent fallback label).
+  const displayModel = decision.final;
 
   const cleanMessages = sanitizeMessages(body.messages ?? []);
 
@@ -351,6 +364,7 @@ export async function handleChatCompletions(
               activeDir,
               abortController.signal,
               onThought,
+              requireExactModel,
             );
             if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
@@ -569,6 +583,7 @@ export async function handleChatCompletions(
               activeDir,
               abortController.signal,
               onThought,
+              requireExactModel,
             );
             if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
@@ -754,6 +769,8 @@ export async function handleChatCompletions(
       promptForAgent,
       configDir,
       abortController.signal,
+      undefined,
+      requireExactModel,
     )
       .then((out) => {
         recordFinalPoolObservation(out.poolObservation);
@@ -851,6 +868,7 @@ export async function handleChatCompletions(
       promptForAgent,
       configDir,
       abortController.signal,
+      requireExactModel,
     );
     latency.mergeAgentMarks(out.latencyMarks);
     syncLatency = Date.now() - syncStart;

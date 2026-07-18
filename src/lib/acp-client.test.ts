@@ -40,6 +40,22 @@ describe("resolveAcpModelConfigValue", () => {
     ).toBe("default[]");
   });
 
+  it("strict mode throws when name not in catalog", () => {
+    expect(() =>
+      resolveAcpModelConfigValue(
+        "unknown",
+        [{ modelId: "x[]", name: "gpt-4" }],
+        { strict: true },
+      ),
+    ).toThrow(/no catalog match/);
+  });
+
+  it("strict mode throws on empty catalog", () => {
+    expect(() =>
+      resolveAcpModelConfigValue("gpt-4", [], { strict: true }),
+    ).toThrow(/empty catalog/);
+  });
+
   it("uses first match when duplicate names", () => {
     expect(
       resolveAcpModelConfigValue("gpt-4", [

@@ -341,6 +341,8 @@ export async function runAgentSync(
   stdinPrompt?: string,
   configDir?: string,
   signal?: AbortSignal,
+  /** Fail closed on cold ACP when the requested model cannot be pinned (fast lane). */
+  requireExactModel?: boolean,
 ): Promise<AgentRunResult> {
   if (config.useAcp && typeof stdinPrompt === "string") {
     const attempt = await trySessionPool(
@@ -384,6 +386,7 @@ export async function runAgentSync(
       skipAuthenticate: config.acpSkipAuthenticate,
       rawDebug: config.acpRawDebug,
       signal,
+      requireExactModel,
     })
       .then((out) => {
         cacheTokenForAccount(configDir);
@@ -458,6 +461,8 @@ export async function runAgentStream(
   configDir?: string,
   signal?: AbortSignal,
   onThought?: StreamLineHandler,
+  /** Fail closed on cold ACP when the requested model cannot be pinned (fast lane). */
+  requireExactModel?: boolean,
 ): Promise<AgentStreamResult> {
   if (config.useAcp && typeof stdinPrompt === "string") {
     const attempt = await trySessionPool(
@@ -510,6 +515,7 @@ export async function runAgentStream(
           skipAuthenticate: config.acpSkipAuthenticate,
           rawDebug: config.acpRawDebug,
           signal,
+          requireExactModel,
         },
         onLine,
         onThought,

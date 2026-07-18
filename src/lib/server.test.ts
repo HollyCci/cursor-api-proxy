@@ -497,7 +497,8 @@ describe("startBridgeServer", () => {
     );
     expect(status).toBe(200);
     const data = JSON.parse(body);
-    expect(data.model).toBe("composer-1.5");
+    // Explicit "default" requests report the sentinel that was executed.
+    expect(data.model).toBe("default");
   });
 
   it("echoes default when request is default and defaultModel is unset", async () => {
