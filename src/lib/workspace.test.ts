@@ -78,6 +78,19 @@ describe("getChatOnlyEnvOverrides", () => {
     expect(fs.existsSync(o.HOME!)).toBe(true);
   });
 
+  it("injects CURSOR_API_KEY from per-account .cursor-token", () => {
+    const pool = fs.mkdtempSync(
+      path.join(os.tmpdir(), "cursor-api-proxy-token-acc-"),
+    );
+    fs.writeFileSync(path.join(pool, ".cursor-token"), "sess-token-abc\n", {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    const o = getChatOnlyEnvOverrides("/tmp/cursor-proxy-ws", pool);
+    expect(o.CURSOR_API_KEY).toBe("sess-token-abc");
+    expect(o.HOME).toContain("cursor-api-proxy-home");
+  });
+
   it("gateway HOME does not surface injected user rules or MCP servers", () => {
     const userHome = fs.mkdtempSync(
       path.join(os.tmpdir(), "cursor-fake-user-home-"),

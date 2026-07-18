@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "./config.js";
+import { readCachedToken } from "./token-cache.js";
 
 export type WorkspaceResult = {
   workspaceDir: string;
@@ -93,6 +94,12 @@ export function getChatOnlyEnvOverrides(
       CURSOR_CONFIG_DIR: authConfigDir,
     };
     applyHomeOverrides(overrides, gatewayHome);
+    // Isolated HOME breaks cursor_login against the real profile; feed the
+    // per-account session token so ACP can authenticate without user HOME.
+    const token = readCachedToken(authConfigDir);
+    if (token) {
+      overrides.CURSOR_API_KEY = token;
+    }
     return overrides;
   }
 

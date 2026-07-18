@@ -469,13 +469,17 @@ export class VirginSessionPool {
       const cwd = poolProcessCwd(accountKey);
       const accountEnv = this.cfg.resolveAccountEnv?.(accountKey) ?? {};
       const env = { ...this.cfg.env, ...accountEnv };
+      const hasApiKey = Boolean(
+        (env.CURSOR_API_KEY && String(env.CURSOR_API_KEY).trim()) ||
+          (env.CURSOR_AUTH_TOKEN && String(env.CURSOR_AUTH_TOKEN).trim()),
+      );
       const opts: AcpConnectionOptions = {
         command: this.cfg.command,
         args: this.cfg.args,
         cwd,
         env,
         spawnOptions: this.cfg.spawnOptions,
-        skipAuthenticate: this.cfg.skipAuthenticate,
+        skipAuthenticate: this.cfg.skipAuthenticate || hasApiKey,
         accountKey,
       };
       const conn = this.cfg.startConnection

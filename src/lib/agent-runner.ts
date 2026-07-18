@@ -415,6 +415,9 @@ export async function runAgentSync(
     if (effectiveChatOnly) {
       Object.assign(acpEnv, getChatOnlyEnvOverrides(workspaceDir, configDir));
     }
+    const skipAuthenticate =
+      config.acpSkipAuthenticate ||
+      Boolean(acpEnv.CURSOR_API_KEY?.trim() || acpEnv.CURSOR_AUTH_TOKEN?.trim());
 
     let releaseAdmit: (() => void) | undefined;
     let coldObs: PoolRequestObservation | undefined;
@@ -449,7 +452,7 @@ export async function runAgentSync(
         model: acpModel,
         requestTimeoutMs: 60_000,
         spawnOptions: config.acpSpawnOptions,
-        skipAuthenticate: config.acpSkipAuthenticate,
+        skipAuthenticate,
         rawDebug: config.acpRawDebug,
         signal,
         requireExactModel,
@@ -549,6 +552,9 @@ export async function runAgentStream(
     if (effectiveChatOnly) {
       Object.assign(acpEnv, getChatOnlyEnvOverrides(workspaceDir, configDir));
     }
+    const skipAuthenticate =
+      config.acpSkipAuthenticate ||
+      Boolean(acpEnv.CURSOR_API_KEY?.trim() || acpEnv.CURSOR_AUTH_TOKEN?.trim());
 
     let releaseAdmit: (() => void) | undefined;
     let coldObs: PoolRequestObservation | undefined;
@@ -594,7 +600,7 @@ export async function runAgentStream(
           model: acpModel,
           requestTimeoutMs: 60_000,
           spawnOptions: config.acpSpawnOptions,
-          skipAuthenticate: config.acpSkipAuthenticate,
+          skipAuthenticate,
           rawDebug: config.acpRawDebug,
           signal,
           requireExactModel,
