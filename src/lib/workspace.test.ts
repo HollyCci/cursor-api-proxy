@@ -78,7 +78,7 @@ describe("getChatOnlyEnvOverrides", () => {
     expect(fs.existsSync(o.HOME!)).toBe(true);
   });
 
-  it("injects CURSOR_API_KEY from per-account .cursor-token", () => {
+  it("seeds gateway auth.json from per-account .cursor-token (not CURSOR_API_KEY)", () => {
     const pool = fs.mkdtempSync(
       path.join(os.tmpdir(), "cursor-api-proxy-token-acc-"),
     );
@@ -87,8 +87,18 @@ describe("getChatOnlyEnvOverrides", () => {
       mode: 0o600,
     });
     const o = getChatOnlyEnvOverrides("/tmp/cursor-proxy-ws", pool);
-    expect(o.CURSOR_API_KEY).toBe("sess-token-abc");
+    expect(o.CURSOR_API_KEY).toBeUndefined();
     expect(o.HOME).toContain("cursor-api-proxy-home");
+    const authPath =
+      process.platform === "win32"
+        ? path.join(o.HOME!, "AppData", "Roaming", "cursor", "auth.json")
+        : path.join(o.HOME!, ".config", "cursor", "auth.json");
+    const auth = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+      accessToken: string;
+      refreshToken: string;
+    };
+    expect(auth.accessToken).toBe("sess-token-abc");
+    expect(auth.refreshToken).toBe("sess-token-abc");
   });
 
   it("gateway HOME does not surface injected user rules or MCP servers", () => {

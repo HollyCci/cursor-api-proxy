@@ -12,10 +12,34 @@ export type WorkspaceResult = {
 };
 
 /**
- * Empty per-account gateway HOME under tmp so Cursor does not load rules/MCP
- * from the real user profile, while auth still comes from `CURSOR_CONFIG_DIR`.
+ * Cursor CLI session login on Linux/macOS reads `$XDG_CONFIG_HOME/cursor/auth.json`
+ * (or `~/.config/cursor/auth.json`). Session JWTs in `.cursor-token` are not valid
+ * as `CURSOR_API_KEY` Dashboard keys — seed auth.json instead.
  */
-export function ensureGatewayHome(accountKey: string): string {
+function seedGatewayAuth(home: string, authConfigDir?: string): void {
+  const token = authConfigDir ? readCachedToken(authConfigDir) : undefined;
+  if (!token) return;
+  const authDir =
+    process.platform === "win32"
+      ? path.join(home, "AppData", "Roaming", "cursor")
+      : path.join(home, ".config", "cursor");
+  fs.mkdirSync(authDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(authDir, "auth.json"),
+    JSON.stringify({ accessToken: token, refreshToken: token }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
+/**
+ * Empty per-account gateway HOME under tmp so Cursor does not load rules/MCP
+ * from the real user profile. When `authConfigDir` is set, seeds session auth
+ * from that account's `.cursor-token` into the gateway `auth.json`.
+ */
+export function ensureGatewayHome(
+  accountKey: string,
+  authConfigDir?: string,
+): string {
   const hash = createHash("sha256")
     .update(accountKey || "default")
     .digest("hex")
@@ -59,6 +83,7 @@ export function ensureGatewayHome(accountKey: string): string {
   } else {
     fs.mkdirSync(path.join(home, ".config"), { recursive: true });
   }
+  seedGatewayAuth(home, authConfigDir);
   return home;
 }
 
@@ -81,25 +106,20 @@ function applyHomeOverrides(
  * rules from ~/.cursor or other user config paths.
  *
  * When `authConfigDir` is set (account pool), `CURSOR_CONFIG_DIR` points at that
- * profile for credentials, while `HOME` / `USERPROFILE` still use an empty
- * gateway home under `os.tmpdir()/cursor-api-proxy-home/<hash>`.
+ * profile for account settings, while `HOME` / `USERPROFILE` use an empty
+ * gateway home under `os.tmpdir()/cursor-api-proxy-home/<hash>` with session
+ * auth seeded from the account `.cursor-token` into `auth.json`.
  */
 export function getChatOnlyEnvOverrides(
   workspaceDir: string,
   authConfigDir?: string,
 ): Record<string, string> {
   if (authConfigDir) {
-    const gatewayHome = ensureGatewayHome(authConfigDir);
+    const gatewayHome = ensureGatewayHome(authConfigDir, authConfigDir);
     const overrides: Record<string, string> = {
       CURSOR_CONFIG_DIR: authConfigDir,
     };
     applyHomeOverrides(overrides, gatewayHome);
-    // Isolated HOME breaks cursor_login against the real profile; feed the
-    // per-account session token so ACP can authenticate without user HOME.
-    const token = readCachedToken(authConfigDir);
-    if (token) {
-      overrides.CURSOR_API_KEY = token;
-    }
     return overrides;
   }
 

@@ -53,8 +53,11 @@ npx cursor-api-proxy doctor
 
 Chat-only / session-pool ACP spawns use an isolated gateway `HOME` under
 `os.tmpdir()/cursor-api-proxy-home/<hash>` (empty rules + `mcpServers: {}`) while
-`CURSOR_CONFIG_DIR` still points at the account auth directory. Real user
-`~/.cursor` rules/MCP are not loaded on cold or pooled paths.
+`CURSOR_CONFIG_DIR` still points at the account directory. Session login is
+seeded from that account's `.cursor-token` into the gateway
+`$XDG_CONFIG_HOME/cursor/auth.json` (session JWTs are not valid as
+`CURSOR_API_KEY`). Real user `~/.cursor` rules/MCP are not loaded on cold or
+pooled paths.
 
 To expose on your network (e.g. Tailscale):
 
