@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyAccountFailure,
+  looksLikePlanUpgradeOnlyResponse,
   shouldDisableForPlanUpgrade,
 } from "./account-failure.js";
 
@@ -52,6 +53,14 @@ describe("shouldDisableForPlanUpgrade", () => {
         exitCode: 0,
         fromErrorChannel: false,
       }),
+    ).toBe(false);
+  });
+
+  it("does not treat short mixed billing prose as upgrade-only", () => {
+    expect(
+      looksLikePlanUpgradeOnlyResponse(
+        "Upgrade your plan to continue. See billing settings.",
+      ),
     ).toBe(false);
   });
 });

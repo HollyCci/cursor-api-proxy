@@ -60,6 +60,31 @@ describe("applyAgentAccountSignals", () => {
       getAccountStats().find((s) => s.configDir === "/tmp/acc-a")?.isDisabled,
     ).toBe(false);
   });
+
+  it("does not quarantine long success when failureText wrongly mirrors stdout", () => {
+    const long = `${"x".repeat(400)} Upgrade your plan to continue ${"y".repeat(400)}`;
+    const kind = applyAgentAccountSignals("/tmp/acc-a", {
+      code: 0,
+      stdout: long,
+      stderr: "",
+      failureText: long,
+    });
+    expect(kind).toBe("other");
+    expect(getUsableCount()).toBe(2);
+  });
+
+  it("quarantines short upgrade-only stdout on success", () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const kind = applyAgentAccountSignals("/tmp/acc-a", {
+      code: 0,
+      stdout: "Upgrade your plan to continue",
+      stderr: "",
+    });
+    expect(kind).toBe("plan_upgrade");
+    expect(getUsableCount()).toBe(1);
+    expect(String(spy.mock.calls[0]?.[0])).toMatch(/disabledAt=\d+/);
+    spy.mockRestore();
+  });
 });
 
 describe("isAllAccountsDisabled", () => {

@@ -10,6 +10,8 @@ import { runAgentStream, runAgentSync } from "./agent-runner.js";
 import {
   initAccountPool,
   getUsableCount,
+  getNextAccountConfigDir,
+  getAccountStats,
 } from "./account-pool.js";
 import { quarantineAccount } from "./account-quarantine.js";
 
@@ -212,6 +214,88 @@ describe("account plan-disable (HTTP)", () => {
     const data = JSON.parse(body);
     expect(data.error.code).toBe("no_usable_accounts");
     expect(runAgentStream).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("sync failover: plan-upgrade on first account retries once on second", async () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({
+        configDirs: ["/tmp/acc-disable-a", "/tmp/acc-disable-b"],
+      }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    vi.mocked(runAgentSync)
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: "Upgrade your plan to continue",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: "ok from b",
+        stderr: "",
+      });
+
+    const { status, body } = await fetchServer(
+      servers[0],
+      "/v1/chat/completions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-3-opus",
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      },
+    );
+
+    expect(status).toBe(200);
+    expect(runAgentSync).toHaveBeenCalledTimes(2);
+    const data = JSON.parse(body);
+    expect(data.choices?.[0]?.message?.content).toMatch(/ok from b/);
+    expect(
+      getAccountStats().find((s) => s.configDir === "/tmp/acc-disable-a")
+        ?.isDisabled,
+    ).toBe(true);
+    expect(getUsableCount()).toBe(1);
+    expect(getNextAccountConfigDir()).toBe("/tmp/acc-disable-b");
+    spy.mockRestore();
+  });
+
+  it("sync does not quarantine long success that mentions upgrade", async () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({
+        configDirs: ["/tmp/acc-disable-a", "/tmp/acc-disable-b"],
+      }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const long = `${"x".repeat(200)} Upgrade your plan to continue ${"y".repeat(200)}`;
+    vi.mocked(runAgentSync).mockResolvedValue({
+      code: 0,
+      stdout: long,
+      stderr: "",
+      failureText: long,
+    });
+
+    const { status } = await fetchServer(servers[0], "/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "claude-3-opus",
+        messages: [{ role: "user", content: "Hi" }],
+      }),
+    });
+
+    expect(status).toBe(200);
+    expect(getUsableCount()).toBe(2);
     spy.mockRestore();
   });
 });

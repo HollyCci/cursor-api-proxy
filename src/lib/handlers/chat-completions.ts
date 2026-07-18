@@ -528,6 +528,7 @@ export async function handleChatCompletions(
                 ) {
                   quarantineAccount(activeDir, "upgrade_plan");
                   midUpgrade = true;
+                  abortController.abort();
                   return;
                 }
                 contentStarted = true;
@@ -673,6 +674,7 @@ export async function handleChatCompletions(
         ) {
           quarantineAccount(configDir, "upgrade_plan");
           midUpgrade = true;
+          abortController.abort();
           return;
         }
         contentStarted = true;

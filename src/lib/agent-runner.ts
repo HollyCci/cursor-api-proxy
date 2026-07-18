@@ -146,7 +146,6 @@ async function trySessionPoolSync(
       code: 0,
       stdout: out.stdout,
       stderr: "",
-      failureText: out.stdout,
       ...(out.reasoning ? { reasoning: out.reasoning } : {}),
       latencyMarks: out.latencyMarks,
       poolHit: true,
@@ -229,8 +228,10 @@ export async function runAgentSync(
             /* ignore */
           }
         }
-        const failureText = out.stderr || out.stdout || undefined;
-        return failureText ? { ...out, failureText } : out;
+        // failureText is error-channel only — never copy success stdout (mis-quarantine).
+        return out.stderr
+          ? { ...out, failureText: out.stderr }
+          : out;
       })
       .catch((err) => {
         if (tempDir) {

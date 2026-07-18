@@ -338,6 +338,7 @@ export async function handleAnthropicMessages(
                 ) {
                   quarantineAccount(activeDir, "upgrade_plan");
                   midUpgrade = true;
+                  abortController.abort();
                   return;
                 }
                 contentStarted = true;
@@ -461,6 +462,7 @@ export async function handleAnthropicMessages(
         ) {
           quarantineAccount(configDir, "upgrade_plan");
           midUpgrade = true;
+          abortController.abort();
           return;
         }
         contentStarted = true;

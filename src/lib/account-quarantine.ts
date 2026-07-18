@@ -37,11 +37,13 @@ export function quarantineAccount(
   const key = poolAccountKey(configDir);
   getSessionPool()?.disableAccount(key);
   const stats = getAccountStats();
+  const account = stats.find((s) => s.configDir === configDir);
   const disabledCount = stats.filter((s) => s.isDisabled).length;
   const totalCount = stats.length;
   const usableCount = getUsableCount();
+  const disabledAt = account?.disabledAt ?? Date.now();
   console.warn(
-    `[account-quarantine] disabled account=${path.basename(configDir)} reason=${reason} usable=${usableCount} disabled=${disabledCount} total=${totalCount}`,
+    `[account-quarantine] disabled account=${path.basename(configDir)} reason=${reason} disabledAt=${disabledAt} usable=${usableCount} disabled=${disabledCount} total=${totalCount}`,
   );
 }
 
@@ -56,13 +58,34 @@ export function applyAgentAccountSignals(
 ): AccountFailureKind {
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
-  const errText = [stderr, result.failureText].filter(Boolean).join("\n");
+  const failureText = result.failureText ?? "";
+
+  // stderr is always an error channel.
   if (
     shouldDisableForPlanUpgrade({
-      text: errText,
+      text: stderr,
       exitCode: result.code,
       fromErrorChannel: true,
-    }) ||
+    })
+  ) {
+    quarantineAccount(configDir, "upgrade_plan");
+    return "plan_upgrade";
+  }
+
+  // failureText is error-only; never treat success-path copies of stdout as errors.
+  if (
+    result.code !== 0 &&
+    shouldDisableForPlanUpgrade({
+      text: failureText,
+      exitCode: result.code,
+      fromErrorChannel: true,
+    })
+  ) {
+    quarantineAccount(configDir, "upgrade_plan");
+    return "plan_upgrade";
+  }
+
+  if (
     shouldDisableForPlanUpgrade({
       text: stdout,
       exitCode: result.code,
@@ -72,7 +95,11 @@ export function applyAgentAccountSignals(
     quarantineAccount(configDir, "upgrade_plan");
     return "plan_upgrade";
   }
-  if (classifyAccountFailure(errText) === "rate_limit") {
+
+  const rateText = [stderr, result.code !== 0 ? failureText : ""]
+    .filter(Boolean)
+    .join("\n");
+  if (classifyAccountFailure(rateText) === "rate_limit") {
     reportRateLimit(configDir, 60_000);
     return "rate_limit";
   }
