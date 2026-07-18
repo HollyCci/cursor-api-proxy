@@ -1,13 +1,19 @@
 import * as fs from "node:fs";
 
 import { shouldDisableForPlanUpgrade } from "./account-failure.js";
+import { normalizePoolModelKey } from "./acp-connection.js";
 import { runAcpStream, runAcpSync } from "./acp-client.js";
 import type { BridgeConfig } from "./config.js";
 import type { CursorExecutionMode } from "./execution-mode.js";
+import type { PoolRequestObservation } from "./pool-metrics.js";
 import { run, runStreaming } from "./process.js";
 import { getChatOnlyEnvOverrides } from "./workspace.js";
 import { readKeychainToken, writeCachedToken } from "./token-cache.js";
-import { getSessionPool, poolAccountKey } from "./acp-session-pool.js";
+import {
+  getSessionPool,
+  poolAccountKey,
+  type VirginSessionPool,
+} from "./acp-session-pool.js";
 
 function cacheTokenForAccount(configDir?: string): void {
   if (!configDir) return;
@@ -26,7 +32,35 @@ export type AgentRunResult = {
   poolHit?: boolean;
   /** Combined text safe for account-failure classification */
   failureText?: string;
+  /**
+   * Eligible-pool outcome for this attempt. Handlers must call
+   * recordFinalPoolObservation once after account-retry settles.
+   */
+  poolObservation?: PoolRequestObservation;
 };
+
+type PoolSyncAttempt = {
+  /** Non-null when pool fully served the request (or plan-upgrade from pool). */
+  result: AgentRunResult | null;
+  /** Null when request is ineligible for pool metrics. */
+  observation: PoolRequestObservation | null;
+};
+
+function inventoryFor(
+  pool: VirginSessionPool,
+  accountKey: string,
+): Pick<PoolRequestObservation, "idle" | "warming" | "checkedOut"> {
+  const s = pool.stats()[accountKey] ?? {
+    pooled: 0,
+    warming: 0,
+    checkedOut: 0,
+  };
+  return {
+    idle: s.pooled,
+    warming: s.warming,
+    checkedOut: s.checkedOut,
+  };
+}
 
 /** Pool prompt catch → quarantine signal or null (cold fallback). Exported for unit tests. */
 export function agentResultFromPoolPromptError(
@@ -99,25 +133,53 @@ async function trySessionPoolSync(
   configDir: string | undefined,
   signal: AbortSignal | undefined,
   effectiveChatOnly: boolean,
-): Promise<AgentRunResult | null> {
+): Promise<PoolSyncAttempt> {
   const pool = getSessionPool();
-  if (!pool?.enabled || !config.useAcp) return null;
+  if (!pool?.enabled || !config.useAcp) {
+    return { result: null, observation: null };
+  }
   // Pool is chat-only / ask-mode / non-max only (Fable B1/B2).
-  if (!effectiveChatOnly) return null;
-  if (config.maxMode) return null;
+  if (!effectiveChatOnly) return { result: null, observation: null };
+  if (config.maxMode) return { result: null, observation: null };
   const mode = extractModeFromCmdArgs(cmdArgs);
-  if (mode !== "ask") return null;
-  if (signal?.aborted) return null;
+  if (mode !== "ask") return { result: null, observation: null };
+  if (signal?.aborted) return { result: null, observation: null };
 
   const accountKey = poolAccountKey(configDir);
   const acpModel = extractModelFromCmdArgs(cmdArgs);
+  const modelKey = normalizePoolModelKey(acpModel, config.defaultModel);
   // Refill is async / off request path; never await warm on the hot path.
   void pool.ensureWarm(accountKey, acpModel);
-  const checkout = pool.checkout(accountKey, acpModel);
-  if (!checkout) {
-    console.log(`[acp-pool] miss account=${accountKey} → cold ACP`);
-    return null;
+  const detailed = pool.checkoutDetailed(accountKey, acpModel);
+  const inv = inventoryFor(pool, accountKey);
+  const baseObs: Omit<
+    PoolRequestObservation,
+    "hit" | "coldSpawn" | "missReason"
+  > & {
+    missReason?: PoolRequestObservation["missReason"];
+  } = {
+    eligible: true,
+    accountKey,
+    modelKey,
+    ...inv,
+  };
+
+  if (!detailed.ok) {
+    console.log(
+      `[acp-pool] miss account=${accountKey} reason=${detailed.reason} → cold ACP`,
+    );
+    return {
+      result: null,
+      observation: {
+        ...baseObs,
+        hit: false,
+        missReason: detailed.reason,
+        coldSpawn: false,
+      },
+    };
   }
+
+  const checkout = detailed.value;
   if (checkout.conn.isDead) {
     console.warn(
       `[acp-pool] dead conn on checkout account=${accountKey} → cold ACP`,
@@ -127,7 +189,15 @@ async function trySessionPoolSync(
     } catch {
       /* ignore */
     }
-    return null;
+    return {
+      result: null,
+      observation: {
+        ...baseObs,
+        hit: false,
+        missReason: "dead",
+        coldSpawn: false,
+      },
+    };
   }
   try {
     const out = await checkout.promptOnce(stdinPrompt, { signal });
@@ -137,18 +207,37 @@ async function trySessionPoolSync(
         `[acp-pool] empty stdout account=${accountKey} → cold ACP`,
       );
       await checkout.discard();
-      return null;
+      return {
+        result: null,
+        observation: {
+          ...baseObs,
+          hit: false,
+          missReason: "prompt_failed",
+          coldSpawn: false,
+        },
+      };
     }
     await checkout.discard();
-    if (signal?.aborted) return null;
+    if (signal?.aborted) {
+      return { result: null, observation: null };
+    }
     cacheTokenForAccount(configDir);
+    const hitObs: PoolRequestObservation = {
+      ...baseObs,
+      hit: true,
+      coldSpawn: false,
+    };
     return {
-      code: 0,
-      stdout: out.stdout,
-      stderr: "",
-      ...(out.reasoning ? { reasoning: out.reasoning } : {}),
-      latencyMarks: out.latencyMarks,
-      poolHit: true,
+      result: {
+        code: 0,
+        stdout: out.stdout,
+        stderr: "",
+        ...(out.reasoning ? { reasoning: out.reasoning } : {}),
+        latencyMarks: out.latencyMarks,
+        poolHit: true,
+        poolObservation: hitObs,
+      },
+      observation: hitObs,
     };
   } catch (err) {
     try {
@@ -162,10 +251,26 @@ async function trySessionPoolSync(
         `[acp-pool] plan-upgrade on prompt, skip cold fallback:`,
         err,
       );
-      return planFail;
+      const hitObs: PoolRequestObservation = {
+        ...baseObs,
+        hit: true,
+        coldSpawn: false,
+      };
+      return {
+        result: { ...planFail, poolObservation: hitObs },
+        observation: hitObs,
+      };
     }
     console.warn(`[acp-pool] prompt failed, discard + cold fallback:`, err);
-    return null;
+    return {
+      result: null,
+      observation: {
+        ...baseObs,
+        hit: false,
+        missReason: "prompt_failed",
+        coldSpawn: false,
+      },
+    };
   }
 }
 
@@ -180,7 +285,7 @@ export async function runAgentSync(
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
   if (config.useAcp && typeof stdinPrompt === "string") {
-    const pooled = await trySessionPoolSync(
+    const attempt = await trySessionPoolSync(
       config,
       stdinPrompt,
       cmdArgs,
@@ -188,7 +293,7 @@ export async function runAgentSync(
       signal,
       effectiveChatOnly,
     );
-    if (pooled) {
+    if (attempt.result) {
       if (tempDir) {
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
@@ -196,7 +301,7 @@ export async function runAgentSync(
           /* ignore */
         }
       }
-      return pooled;
+      return attempt.result;
     }
 
     const acpModel = extractModelFromCmdArgs(cmdArgs);
@@ -208,6 +313,9 @@ export async function runAgentSync(
     if (effectiveChatOnly) {
       Object.assign(acpEnv, getChatOnlyEnvOverrides(workspaceDir, configDir));
     }
+    const coldObs: PoolRequestObservation | undefined = attempt.observation
+      ? { ...attempt.observation, coldSpawn: true, hit: false }
+      : undefined;
     return runAcpSync(config.acpCommand, args, stdinPrompt, {
       cwd: workspaceDir,
       timeoutMs: config.timeoutMs,
@@ -229,9 +337,10 @@ export async function runAgentSync(
           }
         }
         // failureText is error-channel only — never copy success stdout (mis-quarantine).
-        return out.stderr
+        const base = out.stderr
           ? { ...out, failureText: out.stderr }
           : out;
+        return coldObs ? { ...base, poolObservation: coldObs } : base;
       })
       .catch((err) => {
         if (tempDir) {
@@ -241,7 +350,8 @@ export async function runAgentSync(
             /* ignore */
           }
         }
-        return agentResultFromAcpError(err);
+        const failed = agentResultFromAcpError(err);
+        return coldObs ? { ...failed, poolObservation: coldObs } : failed;
       });
   }
   const runEnvOverrides = effectiveChatOnly

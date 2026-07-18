@@ -10,6 +10,7 @@ import {
 import { resolveClientLaunchInfo } from "../client-process.js";
 import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
+import { recordFinalPoolObservation } from "../pool-metrics.js";
 import { createStreamParser } from "../cli-stream-parser.js";
 import type { BridgeConfig } from "../config.js";
 import type { CursorExecutionMode } from "../execution-mode.js";
@@ -600,6 +601,9 @@ export async function handleAnthropicMessages(
     }
     break;
   }
+
+  // One observation per HTTP request (final account attempt only).
+  recordFinalPoolObservation(out.poolObservation);
 
   if (lastSignal === "plan_upgrade") {
     reportRequestError(configDir, syncLatency);

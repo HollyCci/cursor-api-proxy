@@ -6,7 +6,9 @@ export type PoolMissReason =
   | "warming"
   | "dead"
   | "capacity"
-  | "not_enabled";
+  | "not_enabled"
+  /** Checkout succeeded but prompt empty/threw (not a durable hit). */
+  | "prompt_failed";
 
 export type PoolRequestObservation = {
   eligible: boolean;
@@ -68,4 +70,11 @@ export function recordPoolObservation(obs: PoolRequestObservation): void {
   console.log(
     `[pool] eligible=true hit=${obs.hit} reason=${reason} account=${account} model=${model} idle=${obs.idle} warming=${obs.warming} checkedOut=${obs.checkedOut} cold=${cold}`,
   );
+}
+
+/** Handlers call once after account-retry settles (final AgentRunResult only). */
+export function recordFinalPoolObservation(
+  obs: PoolRequestObservation | undefined,
+): void {
+  if (obs) recordPoolObservation(obs);
 }
