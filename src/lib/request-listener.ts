@@ -12,6 +12,7 @@ import {
   adminDashboardMatches,
   handleAdminDashboard,
 } from "./admin-dashboard.js";
+import { configureAdmission } from "./admission.js";
 import { extractBearerToken, json, readBody } from "./http.js";
 import { appendSessionLine, logIncoming } from "./request-log.js";
 
@@ -24,6 +25,11 @@ export function createRequestListener(opts: BridgeServerOptions) {
   const { config } = opts;
   const modelCacheRef: ModelCacheRef = { current: undefined };
   const lastRequestedModelRef: { current?: string } = {};
+  configureAdmission({
+    maxColdSpawns: config.maxColdSpawns ?? 2,
+    maxColdSpawnsPerAccount: config.maxColdSpawnsPerAccount ?? 1,
+    poolWaitMs: config.poolWaitMs ?? 1500,
+  });
 
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const protocol = config.tlsCertPath && config.tlsKeyPath ? "https" : "http";

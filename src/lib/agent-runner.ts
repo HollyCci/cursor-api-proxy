@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 
+import { admitColdSpawn } from "./admission.js";
 import { shouldDisableForPlanUpgrade } from "./account-failure.js";
 import { normalizePoolModelKey } from "./acp-connection.js";
 import { runAcpStream, runAcpSync } from "./acp-client.js";
@@ -37,6 +38,9 @@ export type AgentRunResult = {
    * recordFinalPoolObservation once after account-retry settles.
    */
   poolObservation?: PoolRequestObservation;
+  /** Cold spawn denied — handlers map to 503 before SSE commit. */
+  admissionDenied?: boolean;
+  retryAfterMs?: number;
 };
 
 type PoolStreamCallbacks = {
@@ -57,7 +61,37 @@ export type AgentStreamResult = {
   poolHit?: boolean;
   poolObservation?: PoolRequestObservation;
   latencyMarks?: Record<string, number>;
+  admissionDenied?: boolean;
+  retryAfterMs?: number;
 };
+
+function poolWaitBudget(config: BridgeConfig): number {
+  return Math.max(0, config.poolWaitMs ?? 1500);
+}
+
+function admissionDeniedResult(
+  observation: PoolRequestObservation,
+  retryAfterMs: number,
+  waitMs: number,
+): AgentRunResult {
+  const queueWaitMs = (observation.queueWaitMs ?? 0) + waitMs;
+  const obs: PoolRequestObservation = {
+    ...observation,
+    hit: false,
+    coldSpawn: false,
+    missReason: "admission_denied",
+    queueWaitMs,
+  };
+  return {
+    code: 1,
+    stdout: "",
+    stderr: "cold_spawn_capacity",
+    failureText: "cold_spawn_capacity",
+    admissionDenied: true,
+    retryAfterMs,
+    poolObservation: obs,
+  };
+}
 
 function inventoryFor(
   pool: VirginSessionPool,
@@ -162,9 +196,16 @@ async function trySessionPool(
   const accountKey = poolAccountKey(configDir);
   const acpModel = extractModelFromCmdArgs(cmdArgs);
   const modelKey = normalizePoolModelKey(acpModel, config.defaultModel);
-  // Refill is async / off request path; never await warm on the hot path.
-  void pool.ensureWarm(accountKey, acpModel);
-  const detailed = pool.checkoutDetailed(accountKey, acpModel);
+  // Kick refill; briefly wait for inventory before falling through to cold.
+  const waitBudget = poolWaitBudget(config);
+  const waitStarted = Date.now();
+  const detailed = await pool.waitForCheckout(
+    accountKey,
+    acpModel,
+    waitBudget,
+    signal,
+  );
+  const queueWaitMs = Date.now() - waitStarted;
   const inv = inventoryFor(pool, accountKey);
   const baseObs: Omit<
     PoolRequestObservation,
@@ -176,6 +217,7 @@ async function trySessionPool(
     accountKey,
     modelKey,
     ...inv,
+    ...(queueWaitMs > 0 ? { queueWaitMs } : {}),
   };
 
   if (!detailed.ok) {
@@ -373,47 +415,57 @@ export async function runAgentSync(
     if (effectiveChatOnly) {
       Object.assign(acpEnv, getChatOnlyEnvOverrides(workspaceDir, configDir));
     }
-    const coldObs: PoolRequestObservation | undefined = attempt.observation
-      ? { ...attempt.observation, coldSpawn: true, hit: false }
-      : undefined;
-    return runAcpSync(config.acpCommand, args, stdinPrompt, {
-      cwd: workspaceDir,
-      timeoutMs: config.timeoutMs,
-      env: acpEnv,
-      model: acpModel,
-      requestTimeoutMs: 60_000,
-      spawnOptions: config.acpSpawnOptions,
-      skipAuthenticate: config.acpSkipAuthenticate,
-      rawDebug: config.acpRawDebug,
-      signal,
-      requireExactModel,
-    })
-      .then((out) => {
-        cacheTokenForAccount(configDir);
-        if (tempDir) {
-          try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch {
-            /* ignore */
-          }
-        }
-        // failureText is error-channel only — never copy success stdout (mis-quarantine).
-        const base = out.stderr
-          ? { ...out, failureText: out.stderr }
-          : out;
-        return coldObs ? { ...base, poolObservation: coldObs } : base;
-      })
-      .catch((err) => {
-        if (tempDir) {
-          try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch {
-            /* ignore */
-          }
-        }
-        const failed = agentResultFromAcpError(err);
-        return coldObs ? { ...failed, poolObservation: coldObs } : failed;
+
+    let releaseAdmit: (() => void) | undefined;
+    let coldObs: PoolRequestObservation | undefined;
+    if (attempt.observation) {
+      const admit = await admitColdSpawn(attempt.observation.accountKey ?? "default", {
+        signal,
+        waitMs: poolWaitBudget(config),
       });
+      if (!admit.ok) {
+        cleanupTempDir(tempDir);
+        return admissionDeniedResult(
+          attempt.observation,
+          admit.retryAfterMs,
+          admit.waitMs,
+        );
+      }
+      releaseAdmit = admit.release;
+      coldObs = {
+        ...attempt.observation,
+        coldSpawn: true,
+        hit: false,
+        queueWaitMs:
+          (attempt.observation.queueWaitMs ?? 0) + admit.waitMs,
+      };
+    }
+
+    try {
+      const out = await runAcpSync(config.acpCommand, args, stdinPrompt, {
+        cwd: workspaceDir,
+        timeoutMs: config.timeoutMs,
+        env: acpEnv,
+        model: acpModel,
+        requestTimeoutMs: 60_000,
+        spawnOptions: config.acpSpawnOptions,
+        skipAuthenticate: config.acpSkipAuthenticate,
+        rawDebug: config.acpRawDebug,
+        signal,
+        requireExactModel,
+      });
+      cacheTokenForAccount(configDir);
+      cleanupTempDir(tempDir);
+      // failureText is error-channel only — never copy success stdout (mis-quarantine).
+      const base = out.stderr ? { ...out, failureText: out.stderr } : out;
+      return coldObs ? { ...base, poolObservation: coldObs } : base;
+    } catch (err) {
+      cleanupTempDir(tempDir);
+      const failed = agentResultFromAcpError(err);
+      return coldObs ? { ...failed, poolObservation: coldObs } : failed;
+    } finally {
+      releaseAdmit?.();
+    }
   }
   const runEnvOverrides = effectiveChatOnly
     ? getChatOnlyEnvOverrides(workspaceDir, configDir)
@@ -497,9 +549,39 @@ export async function runAgentStream(
     if (effectiveChatOnly) {
       Object.assign(acpEnv, getChatOnlyEnvOverrides(workspaceDir, configDir));
     }
-    const coldObs: PoolRequestObservation | undefined = attempt.observation
-      ? { ...attempt.observation, coldSpawn: true, hit: false }
-      : undefined;
+
+    let releaseAdmit: (() => void) | undefined;
+    let coldObs: PoolRequestObservation | undefined;
+    if (attempt.observation) {
+      const admit = await admitColdSpawn(attempt.observation.accountKey ?? "default", {
+        signal,
+        waitMs: poolWaitBudget(config),
+      });
+      if (!admit.ok) {
+        cleanupTempDir(tempDir);
+        const denied = admissionDeniedResult(
+          attempt.observation,
+          admit.retryAfterMs,
+          admit.waitMs,
+        );
+        return {
+          code: denied.code,
+          stderr: denied.stderr,
+          admissionDenied: true,
+          retryAfterMs: denied.retryAfterMs,
+          poolObservation: denied.poolObservation,
+        };
+      }
+      releaseAdmit = admit.release;
+      coldObs = {
+        ...attempt.observation,
+        coldSpawn: true,
+        hit: false,
+        queueWaitMs:
+          (attempt.observation.queueWaitMs ?? 0) + admit.waitMs,
+      };
+    }
+
     try {
       const result = await runAcpStream(
         config.acpCommand,
@@ -527,6 +609,8 @@ export async function runAgentStream(
       cleanupTempDir(tempDir);
       const failed = appendErrorToStderr("", err);
       return coldObs ? { ...failed, poolObservation: coldObs } : failed;
+    } finally {
+      releaseAdmit?.();
     }
   }
   const streamEnvOverrides = effectiveChatOnly

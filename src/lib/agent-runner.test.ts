@@ -16,6 +16,10 @@ import {
 } from "./acp-session-pool.js";
 import type { BridgeConfig } from "./config.js";
 import {
+  configureAdmission,
+  resetAdmissionForTests,
+} from "./admission.js";
+import {
   getPoolMetricsSnapshot,
   recordFinalPoolObservation,
   resetPoolMetrics,
@@ -71,6 +75,10 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     sessionPoolMinIdle: 1,
     sessionPoolMaxSessions: 2,
     sessionPoolIdleTtlMs: 60_000,
+    // Deterministic miss→cold path: do not wait for async refill.
+    poolWaitMs: 0,
+    maxColdSpawns: 4,
+    maxColdSpawnsPerAccount: 2,
     ...overrides,
   };
 }
@@ -105,6 +113,12 @@ describe("agentResultFromPoolPromptError", () => {
 describe("runAgentSync pool observation", () => {
   beforeEach(() => {
     resetPoolMetrics();
+    resetAdmissionForTests();
+    configureAdmission({
+      maxColdSpawns: 4,
+      maxColdSpawnsPerAccount: 2,
+      poolWaitMs: 0,
+    });
     vi.mocked(runAcpSync).mockReset();
     vi.mocked(runAcpStream).mockReset();
     vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -113,6 +127,7 @@ describe("runAgentSync pool observation", () => {
 
   afterEach(() => {
     shutdownSessionPool();
+    resetAdmissionForTests();
     vi.restoreAllMocks();
   });
 
@@ -410,6 +425,12 @@ describe("runAgentSync pool observation", () => {
 describe("runAgentStream virgin pool", () => {
   beforeEach(() => {
     resetPoolMetrics();
+    resetAdmissionForTests();
+    configureAdmission({
+      maxColdSpawns: 4,
+      maxColdSpawnsPerAccount: 2,
+      poolWaitMs: 0,
+    });
     vi.mocked(runAcpSync).mockReset();
     vi.mocked(runAcpStream).mockReset();
     vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -418,6 +439,7 @@ describe("runAgentStream virgin pool", () => {
 
   afterEach(() => {
     shutdownSessionPool();
+    resetAdmissionForTests();
     vi.restoreAllMocks();
   });
 

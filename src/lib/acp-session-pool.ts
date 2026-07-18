@@ -169,6 +169,56 @@ export class VirginSessionPool {
     return out;
   }
 
+  /** True when account has a live pooled virgin session for the model. */
+  hasIdle(accountKey: string, model?: string): boolean {
+    if (!this.cfg.enabled) return false;
+    const key = accountKey || "default";
+    if (this.disabledAccounts.has(key)) return false;
+    const modelKey = normalizePoolModelKey(model, this.cfg.defaultModel);
+    this.evictExpired(key);
+    const list = this.slots.get(key) ?? [];
+    return list.some(
+      (s) =>
+        s.state === "pooled" &&
+        !s.conn.isDead &&
+        s.model === modelKey,
+    );
+  }
+
+  /** Account keys that currently hold matching idle inventory. */
+  listAccountsWithIdle(model?: string): string[] {
+    if (!this.cfg.enabled) return [];
+    const out: string[] = [];
+    for (const key of this.slots.keys()) {
+      if (this.hasIdle(key, model)) out.push(key);
+    }
+    return out;
+  }
+
+  /**
+   * EnsureWarm + poll checkout until hit, budget exhausted, or abort.
+   * Returns the last miss result when still empty.
+   */
+  async waitForCheckout(
+    accountKey: string,
+    model: string | undefined,
+    waitMs: number,
+    signal?: AbortSignal,
+  ): Promise<PoolCheckoutResult> {
+    const key = accountKey || "default";
+    void this.ensureWarm(key, model);
+    const deadline = Date.now() + Math.max(0, waitMs);
+    let last: PoolCheckoutResult = this.checkoutDetailed(key, model);
+    if (last.ok) return last;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) return last;
+      await new Promise<void>((r) => setTimeout(r, 20));
+      last = this.checkoutDetailed(key, model);
+      if (last.ok) return last;
+    }
+    return last;
+  }
+
   async ensureWarm(accountKey: string, model?: string): Promise<void> {
     if (!this.cfg.enabled || this.stopped) return;
     const key = accountKey || "default";

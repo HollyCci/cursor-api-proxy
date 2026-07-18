@@ -201,6 +201,9 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_SESSION_POOL_MIN_IDLE` | `2` | Minimum idle virgin sessions per account key. |
 | `CURSOR_BRIDGE_SESSION_POOL_MAX` | `3` | Max sessions per account (including warming/checked-out). |
 | `CURSOR_BRIDGE_SESSION_POOL_IDLE_TTL_MS` | `900000` | Discard pooled virgin sessions older than this. |
+| `CURSOR_BRIDGE_MAX_COLD_SPAWNS` | `2` | Global concurrent cold ACP spawns after a pool miss. Excess requests wait up to `CURSOR_BRIDGE_POOL_WAIT_MS`, then **503** `cold_spawn_capacity` + `Retry-After`. |
+| `CURSOR_BRIDGE_MAX_COLD_SPAWNS_PER_ACCOUNT` | `1` | Per-account cold ACP spawn cap (same wait/503 behavior). |
+| `CURSOR_BRIDGE_POOL_WAIT_MS` | `1500` | Budget to wait for matching idle inventory and/or a cold-spawn permit before denying. |
 | `CURSOR_BRIDGE_ACP_SKIP_AUTHENTICATE` | auto | When `CURSOR_API_KEY` is set, skips the ACP authenticate step. Set to `true` to skip when using `agent login` instead. |
 | `CURSOR_BRIDGE_ACP_RAW_DEBUG` | `false` | When `1` or `true`, log raw JSON-RPC from ACP stdout (requires `NODE_DEBUG=cursor-api-proxy:acp`). |
 | `CURSOR_AGENT_BIN` | `agent` | Path to Cursor CLI binary. Alias precedence: `CURSOR_AGENT_BIN`, then `CURSOR_CLI_BIN`, then `CURSOR_CLI_PATH`. |

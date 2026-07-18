@@ -89,6 +89,10 @@ export type BridgeConfig = {
   sessionPoolMinIdle: number;
   sessionPoolMaxSessions: number;
   sessionPoolIdleTtlMs: number;
+  /** Defaults applied in loadBridgeConfig; optional on hand-built test configs. */
+  maxColdSpawns?: number;
+  maxColdSpawnsPerAccount?: number;
+  poolWaitMs?: number;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -157,5 +161,8 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
       env.sessionPoolMaxSessions,
     ),
     sessionPoolIdleTtlMs: env.sessionPoolIdleTtlMs,
+    maxColdSpawns: env.maxColdSpawns,
+    maxColdSpawnsPerAccount: env.maxColdSpawnsPerAccount,
+    poolWaitMs: env.poolWaitMs,
   };
 }

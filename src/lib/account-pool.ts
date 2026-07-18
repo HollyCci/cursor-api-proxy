@@ -1,3 +1,7 @@
+import * as path from "node:path";
+
+import { getSessionPool } from "./acp-session-pool.js";
+
 type AccountStatus = {
   configDir: string;
   activeRequests: number;
@@ -11,6 +15,11 @@ type AccountStatus = {
   disabled: boolean;
   disabledReason: string;
   disabledAt: number;
+};
+
+export type GetNextConfigDirOpts = {
+  /** Prefer these account keys (e.g. pool inventory with matching idle model). */
+  preferAccountKeys?: string[];
 };
 
 export type AccountStat = {
@@ -53,8 +62,9 @@ export class AccountPool {
    * Never returns permanently disabled accounts. Among non-disabled accounts,
    * ignores those currently rate limited (unless all non-disabled are rate-limited,
    * then uses the one that recovers soonest).
+   * When preferAccountKeys is set, prefer those (still subject to disabled/rate-limit).
    */
-  public getNextConfigDir(): string | undefined {
+  public getNextConfigDir(opts?: GetNextConfigDirOpts): string | undefined {
     if (this.accounts.length === 0) {
       return undefined;
     }
@@ -69,8 +79,16 @@ export class AccountPool {
         ? available
         : [...nonDisabled].sort((a, b) => a.rateLimitUntil - b.rateLimitUntil);
 
+    const prefer = new Set(
+      (opts?.preferAccountKeys ?? []).map((k) => path.resolve(k || "default")),
+    );
+    const preferred = prefer.size
+      ? targetAccounts.filter((a) => prefer.has(path.resolve(a.configDir)))
+      : [];
+    const pool = preferred.length > 0 ? preferred : targetAccounts;
+
     // Sort by active requests (ascending), then by last used (ascending for round-robin effect)
-    const sorted = [...targetAccounts].sort((a, b) => {
+    const sorted = [...pool].sort((a, b) => {
       if (a.activeRequests !== b.activeRequests) {
         return a.activeRequests - b.activeRequests;
       }
@@ -180,9 +198,24 @@ export function initAccountPool(configDirs: string[]) {
   globalPool = new AccountPool(configDirs);
 }
 
-export function getNextAccountConfigDir(): string | undefined {
+export function getNextAccountConfigDir(
+  opts?: GetNextConfigDirOpts,
+): string | undefined {
   if (!globalPool) return undefined;
-  return globalPool.getNextConfigDir();
+  return globalPool.getNextConfigDir(opts);
+}
+
+/**
+ * Prefer accounts that already hold a matching idle virgin session for model.
+ * Falls back to normal least-busy selection when none have idle inventory.
+ */
+export function getNextAccountConfigDirForModel(
+  model?: string,
+): string | undefined {
+  const prefer = getSessionPool()?.listAccountsWithIdle(model) ?? [];
+  return getNextAccountConfigDir(
+    prefer.length > 0 ? { preferAccountKeys: prefer } : undefined,
+  );
 }
 
 export function reportRequestStart(configDir?: string): void {

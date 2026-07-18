@@ -206,6 +206,25 @@ describe("AccountPool edge cases", () => {
       false,
     );
   });
+
+  it("prefers preferAccountKeys even when that account is busier", () => {
+    const pool = new AccountPool(["/acc-a", "/acc-b"]);
+    pool.reportRequestStart("/acc-a");
+    // Without prefer, least-busy picks /acc-b.
+    expect(pool.getNextConfigDir()).toBe("/acc-b");
+    // With prefer, still choose /acc-a (inventory hint).
+    expect(pool.getNextConfigDir({ preferAccountKeys: ["/acc-a"] })).toBe(
+      "/acc-a",
+    );
+  });
+
+  it("never selects a disabled account even if preferred", () => {
+    const pool = new AccountPool(["/acc-a", "/acc-b"]);
+    pool.reportAccountDisabled("/acc-a", "upgrade_plan");
+    expect(pool.getNextConfigDir({ preferAccountKeys: ["/acc-a"] })).toBe(
+      "/acc-b",
+    );
+  });
 });
 
 describe("Global account pool functions", () => {

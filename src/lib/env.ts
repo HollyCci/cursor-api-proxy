@@ -90,6 +90,12 @@ export type LoadedEnv = {
   sessionPoolMinIdle: number;
   sessionPoolMaxSessions: number;
   sessionPoolIdleTtlMs: number;
+  /** Global concurrent cold ACP spawns. CURSOR_BRIDGE_MAX_COLD_SPAWNS */
+  maxColdSpawns: number;
+  /** Per-account cold ACP spawns. CURSOR_BRIDGE_MAX_COLD_SPAWNS_PER_ACCOUNT */
+  maxColdSpawnsPerAccount: number;
+  /** Budget to wait for pool inventory / admission. CURSOR_BRIDGE_POOL_WAIT_MS */
+  poolWaitMs: number;
 };
 
 export type AgentCommand = {
@@ -445,6 +451,20 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     sessionPoolIdleTtlMs: Math.max(
       60_000,
       envNumber(env, ["CURSOR_BRIDGE_SESSION_POOL_IDLE_TTL_MS"], 15 * 60_000),
+    ),
+    maxColdSpawns: Math.max(
+      0,
+      Math.floor(envNumber(env, ["CURSOR_BRIDGE_MAX_COLD_SPAWNS"], 2)),
+    ),
+    maxColdSpawnsPerAccount: Math.max(
+      0,
+      Math.floor(
+        envNumber(env, ["CURSOR_BRIDGE_MAX_COLD_SPAWNS_PER_ACCOUNT"], 1),
+      ),
+    ),
+    poolWaitMs: Math.max(
+      0,
+      Math.floor(envNumber(env, ["CURSOR_BRIDGE_POOL_WAIT_MS"], 1500)),
     ),
   };
 }

@@ -8,7 +8,9 @@ export type PoolMissReason =
   | "capacity"
   | "not_enabled"
   /** Checkout succeeded but prompt empty/threw (not a durable hit). */
-  | "prompt_failed";
+  | "prompt_failed"
+  /** Cold spawn denied by admission semaphore. */
+  | "admission_denied";
 
 export type PoolRequestObservation = {
   eligible: boolean;
