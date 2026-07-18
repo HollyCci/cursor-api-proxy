@@ -11,6 +11,7 @@ import { resolveClientLaunchInfo } from "../client-process.js";
 import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
 import { recordFinalPoolObservation } from "../pool-metrics.js";
+import { poolObservationHeaders } from "../pool-response-headers.js";
 import { createStreamParser } from "../cli-stream-parser.js";
 import type { BridgeConfig } from "../config.js";
 import type { CursorExecutionMode } from "../execution-mode.js";
@@ -710,9 +711,13 @@ export async function handleAnthropicMessages(
 
   // One observation per HTTP request (final account attempt only).
   recordFinalPoolObservation(out.poolObservation);
+  const poolHeaders = poolObservationHeaders(out.poolObservation);
 
   if (out.admissionDenied) {
-    rejectColdSpawnCapacity(res, out.retryAfterMs, truncatedHeaders);
+    rejectColdSpawnCapacity(res, out.retryAfterMs, {
+      ...truncatedHeaders,
+      ...poolHeaders,
+    });
     return;
   }
 
@@ -723,13 +728,18 @@ export async function handleAnthropicMessages(
       rejectNoUsableAccounts(res);
       return;
     }
-    json(res, 500, {
-      error: {
-        type: "api_error",
-        message: "Cursor account plan upgrade required",
-        code: "account_plan_upgrade",
+    json(
+      res,
+      500,
+      {
+        error: {
+          type: "api_error",
+          message: "Cursor account plan upgrade required",
+          code: "account_plan_upgrade",
+        },
       },
-    });
+      { ...truncatedHeaders, ...poolHeaders },
+    );
     return;
   }
 
@@ -744,9 +754,14 @@ export async function handleAnthropicMessages(
       out.code,
       out.stderr,
     );
-    json(res, 500, {
-      error: { type: "api_error", message: errMsg, code: "cursor_cli_error" },
-    });
+    json(
+      res,
+      500,
+      {
+        error: { type: "api_error", message: errMsg, code: "cursor_cli_error" },
+      },
+      { ...truncatedHeaders, ...poolHeaders },
+    );
     return;
   }
 
@@ -771,6 +786,6 @@ export async function handleAnthropicMessages(
         output_tokens: outTok,
       },
     },
-    truncatedHeaders,
+    { ...truncatedHeaders, ...poolHeaders },
   );
 }

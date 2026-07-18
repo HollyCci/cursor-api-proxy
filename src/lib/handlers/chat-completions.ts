@@ -8,6 +8,7 @@ import { getCachedCursorModels } from "./models.js";
 import { buildAgentFixedArgs } from "../agent-cmd-args.js";
 import { runAgentStream, runAgentSync } from "../agent-runner.js";
 import { recordFinalPoolObservation } from "../pool-metrics.js";
+import { poolObservationHeaders } from "../pool-response-headers.js";
 import { createStreamParser } from "../cli-stream-parser.js";
 import { json, writeSseHeaders } from "../http.js";
 import { resolveModelForExecution } from "../model-map.js";
@@ -988,11 +989,14 @@ export async function handleChatCompletions(
   // One observation per HTTP request (final account attempt only).
   recordFinalPoolObservation(out.poolObservation);
 
+  const poolHeaders = poolObservationHeaders(out.poolObservation);
+
   if (out.admissionDenied) {
     latency.mark("shape_done");
     latency.logLine({ ok: false, model: displayModel });
     rejectColdSpawnCapacity(res, out.retryAfterMs, {
       ...truncatedHeaders,
+      ...poolHeaders,
       "X-Cursor-Proxy-Waterfall": latency.headerValue(),
     });
     return;
@@ -1018,6 +1022,7 @@ export async function handleChatCompletions(
       },
       {
         ...truncatedHeaders,
+        ...poolHeaders,
         "X-Cursor-Proxy-Waterfall": latency.headerValue(),
       },
     );
@@ -1045,6 +1050,7 @@ export async function handleChatCompletions(
       },
       {
         ...truncatedHeaders,
+        ...poolHeaders,
         "X-Cursor-Proxy-Waterfall": latency.headerValue(),
       },
     );
@@ -1115,6 +1121,7 @@ export async function handleChatCompletions(
     },
     {
       ...truncatedHeaders,
+      ...poolHeaders,
       "X-Cursor-Proxy-Waterfall": latency.headerValue(),
     },
   );

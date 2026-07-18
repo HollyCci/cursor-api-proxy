@@ -205,6 +205,12 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_MAX_COLD_SPAWNS_PER_ACCOUNT` | `1` | Per-account cold ACP spawn cap (same wait/503 behavior). |
 | `CURSOR_BRIDGE_POOL_WAIT_MS` | `1500` | Budget to wait for matching idle inventory and/or a cold-spawn permit before denying. |
 | `CURSOR_BRIDGE_ACP_SKIP_AUTHENTICATE` | auto | When `CURSOR_API_KEY` is set, skips the ACP authenticate step. Set to `true` to skip when using `agent login` instead. |
+
+**Pool ops verify:** with the proxy running (ACP + session pool enabled), sync chat completions expose `X-Cursor-Proxy-Pool-Hit: 0|1` and (on miss) `X-Cursor-Proxy-Pool-Miss-Reason`. Stream still relies on `[pool]` logs / `/api/status.pool.metrics`. Measure hit rate:
+
+```bash
+node scripts/verify-pool-hit.mjs --target=http://127.0.0.1:8765 --model=composer-2.5 --sync=20 --stream=10
+```
 | `CURSOR_BRIDGE_ACP_RAW_DEBUG` | `false` | When `1` or `true`, log raw JSON-RPC from ACP stdout (requires `NODE_DEBUG=cursor-api-proxy:acp`). |
 | `CURSOR_AGENT_BIN` | `agent` | Path to Cursor CLI binary. Alias precedence: `CURSOR_AGENT_BIN`, then `CURSOR_CLI_BIN`, then `CURSOR_CLI_PATH`. |
 | `CURSOR_AGENT_NODE` | — | **(Windows)** Path to Node.js. With `CURSOR_AGENT_SCRIPT`, spawns Node directly and bypasses cmd.exe’s ~8191 limit (CreateProcess ~32K still applies; see `CURSOR_BRIDGE_WIN_CMDLINE_MAX`). |

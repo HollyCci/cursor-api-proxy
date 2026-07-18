@@ -312,6 +312,46 @@ describe("stream pool observation (HTTP)", () => {
     expect(snap.hits).toBe(1);
   });
 
+  it("sync response exposes pool hit headers", async () => {
+    vi.mocked(runAgentSync).mockImplementationOnce(async () => ({
+      code: 0,
+      stdout: "sync-hi",
+      stderr: "",
+      poolHit: true,
+      poolObservation: {
+        eligible: true,
+        hit: true,
+        idle: 1,
+        warming: 0,
+        checkedOut: 0,
+        coldSpawn: false,
+        accountKey: "/tmp/acc-sync-hdr",
+        modelKey: "composer-2.5",
+      },
+    }));
+
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const syncRes = await fetchServer(servers[0], "/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "claude-3-opus",
+        stream: false,
+        messages: [{ role: "user", content: "Hi" }],
+      }),
+    });
+    expect(syncRes.status).toBe(200);
+    expect(syncRes.headers["x-cursor-proxy-pool-hit"]).toBe("1");
+    expect(syncRes.headers["x-cursor-proxy-pool-miss-reason"]).toBeUndefined();
+    expect(syncRes.body).toContain("sync-hi");
+  });
+
   it("admission denial returns JSON 503 before SSE headers", async () => {
     vi.mocked(runAgentStream).mockImplementationOnce(async () => ({
       code: 1,
