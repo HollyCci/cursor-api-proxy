@@ -35,18 +35,25 @@ import {
   getNextAccountConfigDir,
   reportRequestStart,
   reportRequestEnd,
-  reportRateLimit,
   reportRequestSuccess,
   reportRequestError,
   getAccountStats,
+  getUsableCount,
 } from "../account-pool.js";
+import {
+  applyAgentAccountSignals,
+  isAllAccountsDisabled,
+  quarantineAccount,
+  NO_USABLE_ACCOUNTS_ERROR,
+} from "../account-quarantine.js";
+import { shouldDisableForPlanUpgrade } from "../account-failure.js";
 import {
   fitPromptToWinCmdline,
   warnPromptTruncated,
 } from "../win-cmdline-limit.js";
 
-function isRateLimited(stderr: string): boolean {
-  return /\b429\b|rate.?limit|too many requests/i.test(stderr);
+function rejectNoUsableAccounts(res: http.ServerResponse): void {
+  json(res, 503, { error: { ...NO_USABLE_ACCOUNTS_ERROR } });
 }
 
 export type AnthropicMessagesCtx = {
@@ -223,6 +230,15 @@ export async function handleAnthropicMessages(
     config.promptViaStdin || config.useAcp ? agentPrompt : undefined;
 
   if (body.stream) {
+    const abortController = new AbortController();
+    req.once("close", () => abortController.abort());
+
+    let configDir = getNextAccountConfigDir();
+    if (isAllAccountsDisabled(configDir)) {
+      rejectNoUsableAccounts(res);
+      return;
+    }
+
     writeSseHeaders(res, truncatedHeaders);
     res.on("error", () => {
       /* client disconnected mid-stream */
@@ -248,59 +264,132 @@ export async function handleAnthropicMessages(
       content_block: { type: "text", text: "" },
     });
 
-    const configDir = getNextAccountConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
 
-    const abortController = new AbortController();
-    req.once("close", () => abortController.abort());
+    const endPlanUpgradeStream = (contentStarted: boolean) => {
+      if (
+        !contentStarted &&
+        getAccountStats().length > 0 &&
+        getUsableCount() === 0
+      ) {
+        writeEvent({
+          type: "error",
+          error: {
+            type: "api_error",
+            message: NO_USABLE_ACCOUNTS_ERROR.message,
+            code: NO_USABLE_ACCOUNTS_ERROR.code,
+          },
+        });
+      } else {
+        writeEvent({
+          type: "error",
+          error: {
+            type: "api_error",
+            message: "Cursor account plan upgrade required",
+            code: "account_plan_upgrade",
+          },
+        });
+      }
+      logAccountStats(config.verbose, getAccountStats());
+      res.end();
+    };
 
     if (config.useAcp && typeof promptForAgent === "string") {
-      let accumulated = "";
-      runAgentStream(
-        config,
-        workspaceDir,
-        effectiveChatOnly,
-        cmdArgs,
-        (chunk) => {
-          accumulated += chunk;
-          writeEvent({
-            type: "content_block_delta",
-            index: 0,
-            delta: { type: "text_delta", text: chunk },
-          });
-        },
-        tempDir,
-        promptForAgent,
-        configDir,
-        abortController.signal,
-      )
-        .then(({ code, stderr: stderrOut }) => {
-          const latencyMs = Date.now() - streamStart;
-          reportRequestEnd(configDir);
+      void (async () => {
+        let attempts = 0;
+        let contentStarted = false;
+        let midUpgrade = false;
+        let activeDir = configDir;
+        let accumulated = "";
 
-          if (stderrOut && isRateLimited(stderrOut)) {
-            reportRateLimit(configDir, 60000);
+        while (attempts < 2) {
+          attempts++;
+          if (attempts > 1) {
+            reportRequestEnd(activeDir);
+            activeDir = getNextAccountConfigDir();
+            if (isAllAccountsDisabled(activeDir)) {
+              endPlanUpgradeStream(false);
+              return;
+            }
+            logAccountAssigned(activeDir);
+            reportRequestStart(activeDir);
           }
 
-          if (!abortController.signal.aborted) {
-            if (code !== 0) {
-              reportRequestError(configDir, latencyMs);
+          accumulated = "";
+          contentStarted = false;
+          midUpgrade = false;
+
+          try {
+            const out = await runAgentStream(
+              config,
+              workspaceDir,
+              effectiveChatOnly,
+              cmdArgs,
+              (chunk) => {
+                if (midUpgrade) return;
+                accumulated += chunk;
+                if (
+                  shouldDisableForPlanUpgrade({
+                    text: accumulated,
+                    fromErrorChannel: false,
+                  })
+                ) {
+                  quarantineAccount(activeDir, "upgrade_plan");
+                  midUpgrade = true;
+                  return;
+                }
+                contentStarted = true;
+                writeEvent({
+                  type: "content_block_delta",
+                  index: 0,
+                  delta: { type: "text_delta", text: chunk },
+                });
+              },
+              tempDir,
+              promptForAgent,
+              activeDir,
+              abortController.signal,
+            );
+            const latencyMs = Date.now() - streamStart;
+            reportRequestEnd(activeDir);
+            const signal = midUpgrade
+              ? ("plan_upgrade" as const)
+              : applyAgentAccountSignals(activeDir, {
+                  code: out.code,
+                  stderr: out.stderr,
+                  stdout: accumulated,
+                });
+
+            if (abortController.signal.aborted) {
+              res.end();
+              return;
+            }
+
+            if (signal === "plan_upgrade") {
+              reportRequestError(activeDir, latencyMs);
+              if (!contentStarted && attempts < 2) continue;
+              endPlanUpgradeStream(contentStarted);
+              return;
+            }
+
+            if (out.code !== 0) {
+              reportRequestError(activeDir, latencyMs);
               const publicMsg = logAgentError(
                 config.sessionsLogPath,
                 method,
                 pathname,
                 remoteAddress,
-                code,
-                stderrOut,
+                out.code,
+                out.stderr,
               );
               writeEvent({
                 type: "error",
                 error: { type: "api_error", message: publicMsg },
               });
             } else {
-              reportRequestSuccess(configDir, latencyMs);
+              reportRequestSuccess(activeDir, latencyMs);
               logTrafficResponse(
                 config.verbose,
                 model ?? cursorModel,
@@ -315,37 +404,66 @@ export async function handleAnthropicMessages(
               });
               writeEvent({ type: "message_stop" });
             }
-          }
-          logAccountStats(config.verbose, getAccountStats());
-          res.end();
-        })
-        .catch((err) => {
-          reportRequestEnd(configDir);
-          if (!abortController.signal.aborted) {
-            reportRequestError(configDir, Date.now() - streamStart);
-          }
-          console.error(
-            `[${new Date().toISOString()}] Agent stream error:`,
-            err,
-          );
-          if (!abortController.signal.aborted) {
-            writeEvent({
-              type: "error",
-              error: {
-                type: "api_error",
-                message: "The Cursor agent stream failed. See server logs for details.",
-              },
+            logAccountStats(config.verbose, getAccountStats());
+            res.end();
+            return;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            reportRequestEnd(activeDir);
+            const signal = applyAgentAccountSignals(activeDir, {
+              code: 1,
+              stdout: "",
+              stderr: msg,
+              failureText: msg,
             });
+            if (!abortController.signal.aborted) {
+              reportRequestError(activeDir, Date.now() - streamStart);
+              if (signal === "plan_upgrade" && !contentStarted && attempts < 2) {
+                continue;
+              }
+              if (signal === "plan_upgrade") {
+                endPlanUpgradeStream(contentStarted);
+                return;
+              }
+              writeEvent({
+                type: "error",
+                error: {
+                  type: "api_error",
+                  message:
+                    "The Cursor agent stream failed. See server logs for details.",
+                },
+              });
+            }
+            console.error(
+              `[${new Date().toISOString()}] Agent stream error:`,
+              err,
+            );
+            res.end();
+            return;
           }
-          res.end();
-        });
+        }
+      })();
       return;
     }
 
     let accumulated = "";
+    let contentStarted = false;
+    let midUpgrade = false;
     const parseLine = createStreamParser(
       (text) => {
+        if (midUpgrade) return;
         accumulated += text;
+        if (
+          shouldDisableForPlanUpgrade({
+            text: accumulated,
+            fromErrorChannel: false,
+          })
+        ) {
+          quarantineAccount(configDir, "upgrade_plan");
+          midUpgrade = true;
+          return;
+        }
+        contentStarted = true;
         writeEvent({
           type: "content_block_delta",
           index: 0,
@@ -353,6 +471,7 @@ export async function handleAnthropicMessages(
         });
       },
       () => {
+        if (midUpgrade) return;
         logTrafficResponse(
           config.verbose,
           model ?? cursorModel,
@@ -380,25 +499,35 @@ export async function handleAnthropicMessages(
       configDir,
       abortController.signal,
     )
-      .then(({ code, stderr: stderrOut }) => {
+      .then((out) => {
         const latencyMs = Date.now() - streamStart;
         reportRequestEnd(configDir);
-
-        if (stderrOut && isRateLimited(stderrOut)) {
-          reportRateLimit(configDir, 60000);
-        }
+        const signal = midUpgrade
+          ? ("plan_upgrade" as const)
+          : applyAgentAccountSignals(configDir, {
+              code: out.code,
+              stderr: out.stderr,
+              stdout: accumulated,
+            });
 
         if (abortController.signal.aborted) {
-          /* client disconnected — do not count as success or failure */
-        } else if (code !== 0) {
+          res.end();
+          return;
+        }
+        if (signal === "plan_upgrade") {
+          reportRequestError(configDir, latencyMs);
+          endPlanUpgradeStream(contentStarted);
+          return;
+        }
+        if (out.code !== 0) {
           reportRequestError(configDir, latencyMs);
           logAgentError(
             config.sessionsLogPath,
             method,
             pathname,
             remoteAddress,
-            code,
-            stderrOut,
+            out.code,
+            out.stderr,
           );
         } else {
           reportRequestSuccess(configDir, latencyMs);
@@ -407,9 +536,20 @@ export async function handleAnthropicMessages(
         res.end();
       })
       .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
         reportRequestEnd(configDir);
+        const signal = applyAgentAccountSignals(configDir, {
+          code: 1,
+          stdout: "",
+          stderr: msg,
+          failureText: msg,
+        });
         if (!abortController.signal.aborted) {
           reportRequestError(configDir, Date.now() - streamStart);
+          if (signal === "plan_upgrade") {
+            endPlanUpgradeStream(contentStarted);
+            return;
+          }
         }
         console.error(
           `[${new Date().toISOString()}] Agent stream error:`,
@@ -420,29 +560,60 @@ export async function handleAnthropicMessages(
     return;
   }
 
-  const configDir = getNextAccountConfigDir();
-  logAccountAssigned(configDir);
-  reportRequestStart(configDir);
-  const syncStart = Date.now();
-
   const abortController = new AbortController();
   req.once("close", () => abortController.abort());
 
-  const out = await runAgentSync(
-    config,
-    workspaceDir,
-    effectiveChatOnly,
-    cmdArgs,
-    tempDir,
-    promptForAgent,
-    configDir,
-    abortController.signal,
-  );
-  const syncLatency = Date.now() - syncStart;
-  reportRequestEnd(configDir);
+  let configDir: string | undefined;
+  let out!: Awaited<ReturnType<typeof runAgentSync>>;
+  let syncLatency = 0;
+  let lastSignal: ReturnType<typeof applyAgentAccountSignals> = "other";
 
-  if (out.stderr && isRateLimited(out.stderr)) {
-    reportRateLimit(configDir, 60000);
+  for (let attempts = 0; attempts < 2; attempts++) {
+    configDir = getNextAccountConfigDir();
+    if (isAllAccountsDisabled(configDir)) {
+      rejectNoUsableAccounts(res);
+      return;
+    }
+    logAccountAssigned(configDir);
+    reportRequestStart(configDir);
+    const syncStart = Date.now();
+
+    out = await runAgentSync(
+      config,
+      workspaceDir,
+      effectiveChatOnly,
+      cmdArgs,
+      tempDir,
+      promptForAgent,
+      configDir,
+      abortController.signal,
+    );
+    syncLatency = Date.now() - syncStart;
+    reportRequestEnd(configDir);
+
+    lastSignal = applyAgentAccountSignals(configDir, out);
+    if (lastSignal === "plan_upgrade" && attempts < 1) {
+      reportRequestError(configDir, syncLatency);
+      continue;
+    }
+    break;
+  }
+
+  if (lastSignal === "plan_upgrade") {
+    reportRequestError(configDir, syncLatency);
+    logAccountStats(config.verbose, getAccountStats());
+    if (getAccountStats().length > 0 && getUsableCount() === 0) {
+      rejectNoUsableAccounts(res);
+      return;
+    }
+    json(res, 500, {
+      error: {
+        type: "api_error",
+        message: "Cursor account plan upgrade required",
+        code: "account_plan_upgrade",
+      },
+    });
+    return;
   }
 
   if (out.code !== 0) {

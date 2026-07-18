@@ -506,7 +506,9 @@ export function runAcpSync(
           debugAcp("ACP sync: no content accumulated; stderr tail: %s", stderr.slice(-500));
         }
         finish(0);
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg) stderr += (stderr ? "\n" : "") + msg;
         if (timeout) clearTimeout(timeout);
         if (!resolved) {
           finish(1);
@@ -723,7 +725,9 @@ export function runAcpStream(
         }, pending, requestTimeoutMs);
         latency.mark("model_complete");
         finish(0);
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg) stderr += (stderr ? "\n" : "") + msg;
         if (timeout) clearTimeout(timeout);
         if (!resolved) {
           finish(1);

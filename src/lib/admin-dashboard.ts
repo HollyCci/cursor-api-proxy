@@ -4,7 +4,44 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  getAccountStats,
+  getUsableCount,
+  type AccountStat,
+} from "./account-pool.js";
 import type { BridgeConfig } from "./config.js";
+
+export type AccountCapacityView = {
+  total: number;
+  usable: number;
+  disabled: Array<{ configDir: string; reason: string; disabledAt: number }>;
+  rateLimited: Array<{ configDir: string; until: number }>;
+};
+
+/** Pure view of account pool capacity for GET /api/status. */
+export function buildAccountCapacityView(
+  stats: AccountStat[],
+  usable: number,
+  now = Date.now(),
+): AccountCapacityView {
+  return {
+    total: stats.length,
+    usable,
+    disabled: stats
+      .filter((s) => s.isDisabled)
+      .map((s) => ({
+        configDir: path.basename(s.configDir),
+        reason: s.disabledReason,
+        disabledAt: s.disabledAt,
+      })),
+    rateLimited: stats
+      .filter((s) => s.rateLimitUntil > now)
+      .map((s) => ({
+        configDir: path.basename(s.configDir),
+        until: s.rateLimitUntil,
+      })),
+  };
+}
 
 const PLIST_LABEL = "com.cursor-api-proxy";
 
@@ -207,6 +244,7 @@ function getStatus(
     node: process.version,
     platform: `${process.platform} ${process.arch}`,
     startedAt: new Date(START_TIME).toISOString(),
+    accounts: buildAccountCapacityView(getAccountStats(), getUsableCount()),
   });
 }
 

@@ -255,6 +255,8 @@ Optional per-request overrides:
 
 You can use multiple Cursor accounts to distribute load and avoid hitting usage limits. The proxy now includes a built-in account manager that makes this very easy.
 
+When Cursor returns "Upgrade your plan", the proxy disables that account in-memory until process restart (or a future manual enable). Check `GET /api/status` → `accounts`.
+
 ### 1. Adding Accounts (Easy Method)
 
 You can add new accounts using the CLI `login` command. This will launch the Cursor CLI login process in an isolated profile directory: `~/.cursor-api-proxy/accounts/` on macOS/Linux, or `%USERPROFILE%\.cursor-api-proxy\accounts\` on Windows.
