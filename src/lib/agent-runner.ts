@@ -39,11 +39,24 @@ export type AgentRunResult = {
   poolObservation?: PoolRequestObservation;
 };
 
-type PoolSyncAttempt = {
-  /** Non-null when pool fully served the request (or plan-upgrade from pool). */
+type PoolStreamCallbacks = {
+  onChunk: (text: string) => void;
+  onThoughtChunk?: (text: string) => void;
+};
+
+type PoolAttempt = {
+  /** Non-null when pool fully served (or committed stream failure / plan-upgrade). */
   result: AgentRunResult | null;
   /** Null when request is ineligible for pool metrics. */
   observation: PoolRequestObservation | null;
+};
+
+export type AgentStreamResult = {
+  code: number;
+  stderr: string;
+  poolHit?: boolean;
+  poolObservation?: PoolRequestObservation;
+  latencyMarks?: Record<string, number>;
 };
 
 function inventoryFor(
@@ -126,14 +139,15 @@ function extractModeFromCmdArgs(cmdArgs: string[]): CursorExecutionMode {
   return "ask";
 }
 
-async function trySessionPoolSync(
+async function trySessionPool(
   config: BridgeConfig,
   stdinPrompt: string,
   cmdArgs: string[],
   configDir: string | undefined,
   signal: AbortSignal | undefined,
   effectiveChatOnly: boolean,
-): Promise<PoolSyncAttempt> {
+  stream?: PoolStreamCallbacks,
+): Promise<PoolAttempt> {
   const pool = getSessionPool();
   if (!pool?.enabled || !config.useAcp) {
     return { result: null, observation: null };
@@ -180,15 +194,22 @@ async function trySessionPoolSync(
   }
 
   const checkout = detailed.value;
-  if (checkout.conn.isDead) {
-    console.warn(
-      `[acp-pool] dead conn on checkout account=${accountKey} → cold ACP`,
-    );
+  let discarded = false;
+  const discardOnce = async () => {
+    if (discarded) return;
+    discarded = true;
     try {
       await checkout.discard();
     } catch {
       /* ignore */
     }
+  };
+
+  if (checkout.conn.isDead) {
+    console.warn(
+      `[acp-pool] dead conn on checkout account=${accountKey} → cold ACP`,
+    );
+    await discardOnce();
     return {
       result: null,
       observation: {
@@ -199,25 +220,51 @@ async function trySessionPoolSync(
       },
     };
   }
+
+  let streamCommitted = false;
+  const wrapChunk =
+    (cb?: (text: string) => void) =>
+    (text: string) => {
+      if (text) streamCommitted = true;
+      cb?.(text);
+    };
+
   try {
-    const out = await checkout.promptOnce(stdinPrompt, { signal });
-    // Empty stdout = demux/protocol failure → cold (Fable B3).
+    const out = await checkout.promptOnce(stdinPrompt, {
+      signal,
+      onChunk: stream ? wrapChunk(stream.onChunk) : undefined,
+      onThoughtChunk: stream ? wrapChunk(stream.onThoughtChunk) : undefined,
+    });
+    // Empty stdout = demux/protocol failure → cold (Fable B3), unless stream
+    // already committed chunks (never splice a second cold answer into SSE).
     if (!out.stdout.trim()) {
       console.warn(
-        `[acp-pool] empty stdout account=${accountKey} → cold ACP`,
+        `[acp-pool] empty stdout account=${accountKey} → ${
+          stream && streamCommitted ? "fail closed" : "cold ACP"
+        }`,
       );
-      await checkout.discard();
-      return {
-        result: null,
-        observation: {
-          ...baseObs,
-          hit: false,
-          missReason: "prompt_failed",
-          coldSpawn: false,
-        },
+      await discardOnce();
+      const failObs: PoolRequestObservation = {
+        ...baseObs,
+        hit: false,
+        missReason: "prompt_failed",
+        coldSpawn: false,
       };
+      if (stream && streamCommitted) {
+        return {
+          result: {
+            code: 1,
+            stdout: "",
+            stderr: "empty stdout after streamed chunks",
+            failureText: "empty stdout after streamed chunks",
+            poolObservation: failObs,
+          },
+          observation: failObs,
+        };
+      }
+      return { result: null, observation: failObs };
     }
-    await checkout.discard();
+    await discardOnce();
     if (signal?.aborted) {
       return { result: null, observation: null };
     }
@@ -240,11 +287,7 @@ async function trySessionPoolSync(
       observation: hitObs,
     };
   } catch (err) {
-    try {
-      await checkout.discard();
-    } catch {
-      /* ignore */
-    }
+    await discardOnce();
     const planFail = agentResultFromPoolPromptError(err);
     if (planFail) {
       console.warn(
@@ -261,16 +304,31 @@ async function trySessionPoolSync(
         observation: hitObs,
       };
     }
-    console.warn(`[acp-pool] prompt failed, discard + cold fallback:`, err);
-    return {
-      result: null,
-      observation: {
-        ...baseObs,
-        hit: false,
-        missReason: "prompt_failed",
-        coldSpawn: false,
-      },
+    const msg = err instanceof Error ? err.message : String(err);
+    const failObs: PoolRequestObservation = {
+      ...baseObs,
+      hit: false,
+      missReason: "prompt_failed",
+      coldSpawn: false,
     };
+    if (stream && streamCommitted) {
+      console.warn(
+        `[acp-pool] prompt failed after stream commit, no cold fallback:`,
+        err,
+      );
+      return {
+        result: {
+          code: 1,
+          stdout: "",
+          stderr: msg,
+          failureText: msg,
+          poolObservation: failObs,
+        },
+        observation: failObs,
+      };
+    }
+    console.warn(`[acp-pool] prompt failed, discard + cold fallback:`, err);
+    return { result: null, observation: failObs };
   }
 }
 
@@ -285,7 +343,7 @@ export async function runAgentSync(
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
   if (config.useAcp && typeof stdinPrompt === "string") {
-    const attempt = await trySessionPoolSync(
+    const attempt = await trySessionPool(
       config,
       stdinPrompt,
       cmdArgs,
@@ -380,7 +438,16 @@ export async function runAgentSync(
 
 export type StreamLineHandler = (line: string) => void;
 
-export function runAgentStream(
+function cleanupTempDir(tempDir?: string): void {
+  if (!tempDir) return;
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function runAgentStream(
   config: BridgeConfig,
   workspaceDir: string,
   effectiveChatOnly: boolean,
@@ -391,8 +458,31 @@ export function runAgentStream(
   configDir?: string,
   signal?: AbortSignal,
   onThought?: StreamLineHandler,
-): Promise<{ code: number; stderr: string }> {
+): Promise<AgentStreamResult> {
   if (config.useAcp && typeof stdinPrompt === "string") {
+    const attempt = await trySessionPool(
+      config,
+      stdinPrompt,
+      cmdArgs,
+      configDir,
+      signal,
+      effectiveChatOnly,
+      {
+        onChunk: onLine,
+        onThoughtChunk: onThought,
+      },
+    );
+    if (attempt.result) {
+      cleanupTempDir(tempDir);
+      return {
+        code: attempt.result.code,
+        stderr: attempt.result.stderr,
+        poolHit: attempt.result.poolHit,
+        poolObservation: attempt.result.poolObservation,
+        latencyMarks: attempt.result.latencyMarks,
+      };
+    }
+
     const acpModel = extractModelFromCmdArgs(cmdArgs);
     const acpMode = extractModeFromCmdArgs(cmdArgs);
     let args = acpArgsWithWorkspace(config.acpArgs, workspaceDir);
@@ -402,50 +492,41 @@ export function runAgentStream(
     if (effectiveChatOnly) {
       Object.assign(acpEnv, getChatOnlyEnvOverrides(workspaceDir, configDir));
     }
-    return runAcpStream(
-      config.acpCommand,
-      args,
-      stdinPrompt,
-      {
-        cwd: workspaceDir,
-        timeoutMs: config.timeoutMs,
-        env: acpEnv,
-        model: acpModel,
-        requestTimeoutMs: 60_000,
-        spawnOptions: config.acpSpawnOptions,
-        skipAuthenticate: config.acpSkipAuthenticate,
-        rawDebug: config.acpRawDebug,
-        signal,
-      },
-      onLine,
-      onThought,
-    )
-      .then((result) => {
-        cacheTokenForAccount(configDir);
-        if (tempDir) {
-          try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch {
-            /* ignore */
-          }
-        }
-        return result;
-      })
-      .catch((err) => {
-        if (tempDir) {
-          try {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          } catch {
-            /* ignore */
-          }
-        }
-        return appendErrorToStderr("", err);
-      });
+    const coldObs: PoolRequestObservation | undefined = attempt.observation
+      ? { ...attempt.observation, coldSpawn: true, hit: false }
+      : undefined;
+    try {
+      const result = await runAcpStream(
+        config.acpCommand,
+        args,
+        stdinPrompt,
+        {
+          cwd: workspaceDir,
+          timeoutMs: config.timeoutMs,
+          env: acpEnv,
+          model: acpModel,
+          requestTimeoutMs: 60_000,
+          spawnOptions: config.acpSpawnOptions,
+          skipAuthenticate: config.acpSkipAuthenticate,
+          rawDebug: config.acpRawDebug,
+          signal,
+        },
+        onLine,
+        onThought,
+      );
+      cacheTokenForAccount(configDir);
+      cleanupTempDir(tempDir);
+      return coldObs ? { ...result, poolObservation: coldObs } : result;
+    } catch (err) {
+      cleanupTempDir(tempDir);
+      const failed = appendErrorToStderr("", err);
+      return coldObs ? { ...failed, poolObservation: coldObs } : failed;
+    }
   }
   const streamEnvOverrides = effectiveChatOnly
     ? getChatOnlyEnvOverrides(workspaceDir, configDir)
     : undefined;
-  return runStreaming(config.agentBin, cmdArgs, {
+  const result = await runStreaming(config.agentBin, cmdArgs, {
     cwd: workspaceDir,
     timeoutMs: config.timeoutMs,
     maxMode: config.maxMode,
@@ -454,15 +535,8 @@ export function runAgentStream(
     envOverrides: streamEnvOverrides,
     configDir,
     signal,
-  }).then((result) => {
-    cacheTokenForAccount(configDir);
-    if (tempDir) {
-      try {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
-    }
-    return result;
   });
+  cacheTokenForAccount(configDir);
+  cleanupTempDir(tempDir);
+  return result;
 }

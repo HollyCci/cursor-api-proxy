@@ -303,6 +303,9 @@ export async function handleChatCompletions(
         let accumulated = "";
         let accumulatedThought = "";
         let activeDir = configDir;
+        let streamPoolObs: Parameters<
+          typeof recordFinalPoolObservation
+        >[0];
 
         while (attempts < 2) {
           attempts++;
@@ -310,6 +313,7 @@ export async function handleChatCompletions(
             reportRequestEnd(activeDir);
             activeDir = getNextAccountConfigDir();
             if (isAllAccountsDisabled(activeDir)) {
+              recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
               return;
             }
@@ -348,6 +352,7 @@ export async function handleChatCompletions(
               abortController.signal,
               onThought,
             );
+            if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
             reportRequestEnd(activeDir);
             const signal = applyAgentAccountSignals(activeDir, {
@@ -357,6 +362,7 @@ export async function handleChatCompletions(
             });
 
             if (abortController.signal.aborted) {
+              recordFinalPoolObservation(streamPoolObs);
               res.end();
               return;
             }
@@ -364,6 +370,7 @@ export async function handleChatCompletions(
             if (signal === "plan_upgrade") {
               reportRequestError(activeDir, latencyMs);
               if (attempts < 2) continue;
+              recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
               return;
             }
@@ -380,6 +387,7 @@ export async function handleChatCompletions(
               );
               writeChatSseError(res, publicMsg, "cursor_cli_error");
               logAccountStats(config.verbose, getAccountStats());
+              recordFinalPoolObservation(streamPoolObs);
               res.end();
               return;
             }
@@ -432,6 +440,7 @@ export async function handleChatCompletions(
               });
             }
             writeBufferedEvents(res, buffered);
+            recordFinalPoolObservation(streamPoolObs);
             res.end();
             return;
           } catch (err) {
@@ -447,6 +456,7 @@ export async function handleChatCompletions(
               reportRequestError(activeDir, Date.now() - streamStart);
               if (signal === "plan_upgrade" && attempts < 2) continue;
               if (signal === "plan_upgrade") {
+                recordFinalPoolObservation(streamPoolObs);
                 endPlanUpgradeStream(false);
                 return;
               }
@@ -460,6 +470,7 @@ export async function handleChatCompletions(
               `[${new Date().toISOString()}] Agent stream error:`,
               err,
             );
+            recordFinalPoolObservation(streamPoolObs);
             res.end();
             return;
           }
@@ -476,6 +487,9 @@ export async function handleChatCompletions(
         let activeDir = configDir;
         let accumulated = "";
         let accumulatedThought = "";
+        let streamPoolObs: Parameters<
+          typeof recordFinalPoolObservation
+        >[0];
 
         while (attempts < 2) {
           attempts++;
@@ -483,6 +497,7 @@ export async function handleChatCompletions(
             reportRequestEnd(activeDir);
             activeDir = getNextAccountConfigDir();
             if (isAllAccountsDisabled(activeDir)) {
+              recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
               return;
             }
@@ -555,6 +570,7 @@ export async function handleChatCompletions(
               abortController.signal,
               onThought,
             );
+            if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
             reportRequestEnd(activeDir);
             const signal = midUpgrade
@@ -566,6 +582,7 @@ export async function handleChatCompletions(
                 });
 
             if (abortController.signal.aborted) {
+              recordFinalPoolObservation(streamPoolObs);
               res.end();
               return;
             }
@@ -573,6 +590,7 @@ export async function handleChatCompletions(
             if (signal === "plan_upgrade") {
               reportRequestError(activeDir, latencyMs);
               if (!contentStarted && attempts < 2) continue;
+              recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(contentStarted);
               return;
             }
@@ -589,6 +607,7 @@ export async function handleChatCompletions(
               );
               writeChatSseError(res, publicMsg, "cursor_cli_error");
               logAccountStats(config.verbose, getAccountStats());
+              recordFinalPoolObservation(streamPoolObs);
               res.end();
               return;
             }
@@ -622,6 +641,7 @@ export async function handleChatCompletions(
               })}\n\n`,
             );
             res.write("data: [DONE]\n\n");
+            recordFinalPoolObservation(streamPoolObs);
             res.end();
             return;
           } catch (err) {
@@ -639,6 +659,7 @@ export async function handleChatCompletions(
                 continue;
               }
               if (signal === "plan_upgrade") {
+                recordFinalPoolObservation(streamPoolObs);
                 endPlanUpgradeStream(contentStarted);
                 return;
               }
@@ -652,6 +673,7 @@ export async function handleChatCompletions(
               `[${new Date().toISOString()}] Agent stream error:`,
               err,
             );
+            recordFinalPoolObservation(streamPoolObs);
             res.end();
             return;
           }
@@ -734,6 +756,7 @@ export async function handleChatCompletions(
       abortController.signal,
     )
       .then((out) => {
+        recordFinalPoolObservation(out.poolObservation);
         const latencyMs = Date.now() - streamStart;
         reportRequestEnd(configDir);
         const signal = midUpgrade

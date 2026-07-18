@@ -304,6 +304,9 @@ export async function handleAnthropicMessages(
         let midUpgrade = false;
         let activeDir = configDir;
         let accumulated = "";
+        let streamPoolObs: Parameters<
+          typeof recordFinalPoolObservation
+        >[0];
 
         while (attempts < 2) {
           attempts++;
@@ -311,6 +314,7 @@ export async function handleAnthropicMessages(
             reportRequestEnd(activeDir);
             activeDir = getNextAccountConfigDir();
             if (isAllAccountsDisabled(activeDir)) {
+              recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(false);
               return;
             }
@@ -354,6 +358,7 @@ export async function handleAnthropicMessages(
               activeDir,
               abortController.signal,
             );
+            if (out.poolObservation) streamPoolObs = out.poolObservation;
             const latencyMs = Date.now() - streamStart;
             reportRequestEnd(activeDir);
             const signal = midUpgrade
@@ -365,6 +370,7 @@ export async function handleAnthropicMessages(
                 });
 
             if (abortController.signal.aborted) {
+              recordFinalPoolObservation(streamPoolObs);
               res.end();
               return;
             }
@@ -372,6 +378,7 @@ export async function handleAnthropicMessages(
             if (signal === "plan_upgrade") {
               reportRequestError(activeDir, latencyMs);
               if (!contentStarted && attempts < 2) continue;
+              recordFinalPoolObservation(streamPoolObs);
               endPlanUpgradeStream(contentStarted);
               return;
             }
@@ -407,6 +414,7 @@ export async function handleAnthropicMessages(
               writeEvent({ type: "message_stop" });
             }
             logAccountStats(config.verbose, getAccountStats());
+            recordFinalPoolObservation(streamPoolObs);
             res.end();
             return;
           } catch (err) {
@@ -424,6 +432,7 @@ export async function handleAnthropicMessages(
                 continue;
               }
               if (signal === "plan_upgrade") {
+                recordFinalPoolObservation(streamPoolObs);
                 endPlanUpgradeStream(contentStarted);
                 return;
               }
@@ -440,6 +449,7 @@ export async function handleAnthropicMessages(
               `[${new Date().toISOString()}] Agent stream error:`,
               err,
             );
+            recordFinalPoolObservation(streamPoolObs);
             res.end();
             return;
           }
@@ -503,6 +513,7 @@ export async function handleAnthropicMessages(
       abortController.signal,
     )
       .then((out) => {
+        recordFinalPoolObservation(out.poolObservation);
         const latencyMs = Date.now() - streamStart;
         reportRequestEnd(configDir);
         const signal = midUpgrade

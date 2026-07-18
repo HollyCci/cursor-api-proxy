@@ -2,9 +2,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AcpConnection } from "./acp-connection.js";
-import { runAcpSync } from "./acp-client.js";
+import { runAcpStream, runAcpSync } from "./acp-client.js";
 import {
   agentResultFromPoolPromptError,
+  runAgentStream,
   runAgentSync,
 } from "./agent-runner.js";
 import {
@@ -25,6 +26,7 @@ vi.mock("./acp-client.js", async (importOriginal) => {
   return {
     ...actual,
     runAcpSync: vi.fn(),
+    runAcpStream: vi.fn(),
   };
 });
 
@@ -104,6 +106,7 @@ describe("runAgentSync pool observation", () => {
   beforeEach(() => {
     resetPoolMetrics();
     vi.mocked(runAcpSync).mockReset();
+    vi.mocked(runAcpStream).mockReset();
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
@@ -401,5 +404,247 @@ describe("runAgentSync pool observation", () => {
       coldSpawns: 0,
     });
     void first;
+  });
+});
+
+describe("runAgentStream virgin pool", () => {
+  beforeEach(() => {
+    resetPoolMetrics();
+    vi.mocked(runAcpSync).mockReset();
+    vi.mocked(runAcpStream).mockReset();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    shutdownSessionPool();
+    vi.restoreAllMocks();
+  });
+
+  it("does not cold-fallback after a streamed chunk then prompt error", async () => {
+    const account = poolAccountKey("/tmp/cursor-proxy-pool-stream/acc-commit");
+    const fakeConn = {
+      id: "stream-commit",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => ({
+        sessionId: "sess-commit",
+        createdAt: Date.now(),
+        sessionCwd: undefined,
+        effectiveModel: "composer-2.5",
+      }),
+      promptOnce: async (
+        _sessionId: string,
+        _prompt: string,
+        opts?: { onChunk?: (t: string) => void },
+      ) => {
+        opts?.onChunk?.("partial");
+        throw new Error("stream broke after chunk");
+      },
+    } as unknown as AcpConnection;
+
+    const pool = initSessionPool({
+      enabled: true,
+      minIdle: 1,
+      maxSessions: 2,
+      idleTtlMs: 60_000,
+      command: node,
+      args: [fakeServerPath],
+      skipAuthenticate: true,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    await pool!.ensureWarm(account, "composer-2.5");
+    await waitPooled(pool!, account);
+
+    const chunks: string[] = [];
+    const out = await runAgentStream(
+      baseConfig(),
+      cwd,
+      true,
+      ["acp", "--mode", "ask", "--model", "composer-2.5"],
+      (t) => chunks.push(t),
+      undefined,
+      "hi",
+      account,
+    );
+
+    expect(chunks).toEqual(["partial"]);
+    expect(runAcpStream).not.toHaveBeenCalled();
+    expect(out.code).not.toBe(0);
+    expect(out.poolObservation).toMatchObject({
+      eligible: true,
+      hit: false,
+      missReason: "prompt_failed",
+      coldSpawn: false,
+    });
+  });
+
+  it("serves stream hit from pool without calling runAcpStream", async () => {
+    const account = poolAccountKey("/tmp/cursor-proxy-pool-stream/acc-hit");
+    const fakeConn = {
+      id: "stream-hit",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => ({
+        sessionId: "sess-hit",
+        createdAt: Date.now(),
+        sessionCwd: undefined,
+        effectiveModel: "composer-2.5",
+      }),
+      promptOnce: async (
+        _sessionId: string,
+        _prompt: string,
+        opts?: {
+          onChunk?: (t: string) => void;
+          onThoughtChunk?: (t: string) => void;
+        },
+      ) => {
+        opts?.onThoughtChunk?.("think");
+        opts?.onChunk?.("hello");
+        return {
+          stdout: "hello",
+          reasoning: "think",
+          latencyMarks: { prompt_dispatched: 1 },
+        };
+      },
+    } as unknown as AcpConnection;
+
+    const pool = initSessionPool({
+      enabled: true,
+      minIdle: 1,
+      maxSessions: 2,
+      idleTtlMs: 60_000,
+      command: node,
+      args: [fakeServerPath],
+      skipAuthenticate: true,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    await pool!.ensureWarm(account, "composer-2.5");
+    await waitPooled(pool!, account);
+
+    const text: string[] = [];
+    const thought: string[] = [];
+    const out = await runAgentStream(
+      baseConfig(),
+      cwd,
+      true,
+      ["acp", "--mode", "ask", "--model", "composer-2.5"],
+      (t) => text.push(t),
+      undefined,
+      "hi",
+      account,
+      undefined,
+      (t) => thought.push(t),
+    );
+
+    expect(text).toEqual(["hello"]);
+    expect(thought).toEqual(["think"]);
+    expect(runAcpStream).not.toHaveBeenCalled();
+    expect(out.code).toBe(0);
+    expect(out.poolHit).toBe(true);
+    expect(out.poolObservation).toMatchObject({
+      eligible: true,
+      hit: true,
+      coldSpawn: false,
+    });
+  });
+
+  it("cold-falls back on pool miss and marks coldSpawn", async () => {
+    initSessionPool({
+      enabled: true,
+      minIdle: 1,
+      maxSessions: 2,
+      idleTtlMs: 60_000,
+      command: node,
+      args: [fakeServerPath],
+      skipAuthenticate: true,
+      defaultModel: "composer-2.5",
+    });
+    vi.mocked(runAcpStream).mockImplementation(
+      async (_cmd, _args, _prompt, _opts, onChunk) => {
+        onChunk("cold-stream");
+        return { code: 0, stderr: "" };
+      },
+    );
+
+    const account = poolAccountKey("/tmp/cursor-proxy-pool-stream/acc-miss");
+    const chunks: string[] = [];
+    const out = await runAgentStream(
+      baseConfig(),
+      cwd,
+      true,
+      ["acp", "--mode", "ask", "--model", "composer-2.5"],
+      (t) => chunks.push(t),
+      undefined,
+      "hi",
+      account,
+    );
+
+    expect(chunks).toEqual(["cold-stream"]);
+    expect(runAcpStream).toHaveBeenCalledTimes(1);
+    expect(out.poolHit).toBeFalsy();
+    expect(out.poolObservation).toMatchObject({
+      eligible: true,
+      hit: false,
+      coldSpawn: true,
+    });
+    expect(["empty", "warming"]).toContain(out.poolObservation?.missReason);
+  });
+
+  it("allows cold fallback when prompt fails before any chunk", async () => {
+    const account = poolAccountKey("/tmp/cursor-proxy-pool-stream/acc-early");
+    const fakeConn = {
+      id: "stream-early",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => ({
+        sessionId: "sess-early",
+        createdAt: Date.now(),
+        sessionCwd: undefined,
+        effectiveModel: "composer-2.5",
+      }),
+      promptOnce: async () => {
+        throw new Error("fail before chunk");
+      },
+    } as unknown as AcpConnection;
+
+    const pool = initSessionPool({
+      enabled: true,
+      minIdle: 1,
+      maxSessions: 2,
+      idleTtlMs: 60_000,
+      command: node,
+      args: [fakeServerPath],
+      skipAuthenticate: true,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    await pool!.ensureWarm(account, "composer-2.5");
+    await waitPooled(pool!, account);
+
+    vi.mocked(runAcpStream).mockResolvedValue({ code: 0, stderr: "" });
+
+    const out = await runAgentStream(
+      baseConfig(),
+      cwd,
+      true,
+      ["acp", "--mode", "ask", "--model", "composer-2.5"],
+      () => undefined,
+      undefined,
+      "hi",
+      account,
+    );
+
+    expect(runAcpStream).toHaveBeenCalledTimes(1);
+    expect(out.poolObservation).toMatchObject({
+      missReason: "prompt_failed",
+      coldSpawn: true,
+      hit: false,
+    });
   });
 });
