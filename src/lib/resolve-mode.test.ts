@@ -16,6 +16,8 @@ function base(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     force: false,
     approveMcps: false,
     strictModel: true,
+    stickyModel: false,
+    cursorFastModel: "composer-2.5",
     workspace: "/w",
     timeoutMs: 30_000,
     sessionsLogPath: "/tmp/s.log",

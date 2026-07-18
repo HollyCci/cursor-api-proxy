@@ -17,6 +17,7 @@ import {
   normalizePoolModelKey,
   type AcpConnectionOptions,
 } from "./acp-connection.js";
+import type { PoolMissReason } from "./pool-metrics.js";
 
 export type SessionPoolConfig = {
   enabled: boolean;
@@ -73,6 +74,10 @@ export type PoolCheckout = {
   }>;
   discard: () => Promise<void>;
 };
+
+export type PoolCheckoutResult =
+  | { ok: true; value: PoolCheckout }
+  | { ok: false; reason: PoolMissReason };
 
 /** Stable pool process cwd per account (not used as session workspace). */
 function poolProcessCwd(accountKey: string): string {
@@ -176,13 +181,23 @@ export class VirginSessionPool {
   }
 
   /**
-   * Atomically take one pooled virgin session with strict model match, or null.
+   * Atomically take one pooled virgin session with strict model match.
+   * Reports a structured miss reason when no session is available.
    */
-  checkout(accountKey: string, model?: string): PoolCheckout | null {
-    if (!this.cfg.enabled) return null;
+  checkoutDetailed(accountKey: string, model?: string): PoolCheckoutResult {
+    if (!this.cfg.enabled) return { ok: false, reason: "not_enabled" };
     const key = accountKey || "default";
-    if (this.disabledAccounts.has(key)) return null;
+    if (this.disabledAccounts.has(key)) {
+      return { ok: false, reason: "disabled" };
+    }
     const modelKey = normalizePoolModelKey(model, this.cfg.defaultModel);
+    const preEvict = this.slots.get(key) ?? [];
+    const hadDeadMatch = preEvict.some(
+      (s) =>
+        s.state === "pooled" &&
+        s.model === modelKey &&
+        s.conn.isDead,
+    );
     this.evictExpired(key);
     const list = this.slots.get(key) ?? [];
     const idx = list.findIndex(
@@ -192,8 +207,9 @@ export class VirginSessionPool {
         s.model === modelKey,
     );
     if (idx < 0) {
+      const reason = this.classifyMiss(key, modelKey, hadDeadMatch);
       void this.ensureWarm(key, model);
-      return null;
+      return { ok: false, reason };
     }
     const slot = list[idx]!;
     slot.state = "checked_out";
@@ -216,14 +232,48 @@ export class VirginSessionPool {
     };
 
     return {
-      accountKey: key,
-      sessionId: slot.sessionId,
-      conn: slot.conn,
-      effectiveModel: slot.model,
-      promptOnce: (prompt, opts) =>
-        slot.conn.promptOnce(slot.sessionId, prompt, opts),
-      discard,
+      ok: true,
+      value: {
+        accountKey: key,
+        sessionId: slot.sessionId,
+        conn: slot.conn,
+        effectiveModel: slot.model,
+        promptOnce: (prompt, opts) =>
+          slot.conn.promptOnce(slot.sessionId, prompt, opts),
+        discard,
+      },
     };
+  }
+
+  /**
+   * Backward-compatible wrapper: returns PoolCheckout or null.
+   */
+  checkout(accountKey: string, model?: string): PoolCheckout | null {
+    const result = this.checkoutDetailed(accountKey, model);
+    return result.ok ? result.value : null;
+  }
+
+  private classifyMiss(
+    accountKey: string,
+    modelKey: string,
+    hadDeadMatch: boolean,
+  ): PoolMissReason {
+    if (hadDeadMatch) return "dead";
+    const list = this.slots.get(accountKey) ?? [];
+    const warmingForModel = list.some(
+      (s) => s.state === "warming" && s.model === modelKey,
+    );
+    if (warmingForModel) return "warming";
+    const otherModelIdle = list.some(
+      (s) =>
+        s.state === "pooled" &&
+        !s.conn.isDead &&
+        s.model !== modelKey,
+    );
+    if (otherModelIdle) return "model_mismatch";
+    const live = list.filter((s) => s.state !== "dead").length;
+    if (live >= this.cfg.maxSessions) return "capacity";
+    return "empty";
   }
 
   shutdown(): void {

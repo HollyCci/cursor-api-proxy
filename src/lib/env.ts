@@ -27,6 +27,17 @@ export type LoadedEnv = {
   force: boolean;
   approveMcps: boolean;
   strictModel: boolean;
+  /**
+   * When true, omitted request model reuses lastRequestedModelRef.
+   * Default false — use defaultModel only (no cross-request bleed).
+   * See CURSOR_BRIDGE_STICKY_MODEL.
+   */
+  stickyModel: boolean;
+  /**
+   * Canonical model for `cursor-fast` / `fast` aliases.
+   * See CURSOR_BRIDGE_FAST_MODEL.
+   */
+  cursorFastModel: string;
   workspace: string;
   timeoutMs: number;
   tlsCertPath?: string;
@@ -387,6 +398,10 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     force,
     approveMcps: envBool(env, ["CURSOR_BRIDGE_APPROVE_MCPS"], false),
     strictModel: envBool(env, ["CURSOR_BRIDGE_STRICT_MODEL"], true),
+    stickyModel: envBool(env, ["CURSOR_BRIDGE_STICKY_MODEL"], false),
+    cursorFastModel: normalizeModelId(
+      envString(env, ["CURSOR_BRIDGE_FAST_MODEL"]) ?? "composer-2.5",
+    ),
     workspace:
       resolveAbsolutePath(envString(env, ["CURSOR_BRIDGE_WORKSPACE"]), cwd) ??
       cwd,

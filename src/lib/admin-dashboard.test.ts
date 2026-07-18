@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildAccountCapacityView } from "./admin-dashboard.js";
+import {
+  buildAccountCapacityView,
+  buildPoolStatusView,
+} from "./admin-dashboard.js";
 import type { AccountStat } from "./account-pool.js";
 
 function stat(partial: Partial<AccountStat> & { configDir: string }): AccountStat {
@@ -59,3 +62,33 @@ describe("buildAccountCapacityView", () => {
     });
   });
 });
+
+describe("buildPoolStatusView", () => {
+  it("exposes enabled, metrics, and inventory for /api/status.pool", () => {
+    const view = buildPoolStatusView(
+      true,
+      {
+        eligible: 2,
+        hits: 1,
+        misses: { empty: 1 },
+        coldSpawns: 1,
+      },
+      {
+        acc1: { pooled: 1, warming: 0, checkedOut: 0 },
+      },
+    );
+    expect(view).toEqual({
+      enabled: true,
+      metrics: {
+        eligible: 2,
+        hits: 1,
+        misses: { empty: 1 },
+        coldSpawns: 1,
+      },
+      inventory: {
+        acc1: { pooled: 1, warming: 0, checkedOut: 0 },
+      },
+    });
+  });
+});
+

@@ -176,7 +176,9 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 | `CURSOR_BRIDGE_WORKSPACE` | process cwd | Base workspace directory for Cursor CLI. With `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`, header `X-Cursor-Workspace` must point to an **existing directory under this path** (after resolving real paths). |
 | `CURSOR_BRIDGE_MODE` | — | Server default for Cursor CLI `--mode`: **`agent`**, **`ask`**, or **`plan`**. If unset, default is **`ask`**. **Env wins over** CLI `--mode` when both are set. Per request, JSON body **`mode`** or header **`X-Cursor-Mode`** overrides (precedence: body → header → this env → `--mode` → `ask`). Invalid value → startup error. With **`agent`** (or **`plan`**) and real workspace, the CLI may **read/write files** under `CURSOR_BRIDGE_WORKSPACE` / cwd—see `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE`. |
 | `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Default model when request omits one |
-| `CURSOR_BRIDGE_STRICT_MODEL` | `true` | Use last requested model when none specified |
+| `CURSOR_BRIDGE_FAST_MODEL` | `composer-2.5` | Canonical model for request aliases `cursor-fast` / `fast` |
+| `CURSOR_BRIDGE_STICKY_MODEL` | `false` | When `true`, omitted model reuses the last resolved model on this process. Default **off** — omitted model always uses `CURSOR_BRIDGE_DEFAULT_MODEL` (no cross-client bleed). |
+| `CURSOR_BRIDGE_STRICT_MODEL` | `true` | Legacy flag retained for compatibility; sticky reuse is controlled by `CURSOR_BRIDGE_STICKY_MODEL` |
 | `CURSOR_BRIDGE_FORCE` | `false` | Pass `--force` to Cursor CLI |
 | `CURSOR_BRIDGE_APPROVE_MCPS` | `false` | Pass `--approve-mcps` to Cursor CLI |
 | `CURSOR_BRIDGE_TIMEOUT_MS` | `300000` | Timeout per completion (ms) |
@@ -207,6 +209,7 @@ Environment handling is centralized in one module. Aliases, defaults, path resol
 
 Notes:
 
+- Request model aliases **`cursor-fast`** / **`fast`** resolve to `CURSOR_BRIDGE_FAST_MODEL` (default `composer-2.5`). Sticky last-model reuse is **opt-in** via `CURSOR_BRIDGE_STICKY_MODEL=true`; by default an omitted model uses only `CURSOR_BRIDGE_DEFAULT_MODEL`.
 - The `login` subcommand depends on `chrome-launcher`; its dependency tree may pull typings into production installs. Prefer `npm audit` before release; upstream may move types to `devDependencies` over time.
 - `--tailscale` changes the default host to `0.0.0.0` only when `CURSOR_BRIDGE_HOST` is not already set.
 - ACP `session/request_permission` uses `reject-once` (least-privilege) so the agent cannot grant file/tool access; intentional for chat-only mode.

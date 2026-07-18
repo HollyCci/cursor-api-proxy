@@ -17,6 +17,8 @@ describe("loadEnvConfig", () => {
     expect(loaded.force).toBe(false);
     expect(loaded.approveMcps).toBe(false);
     expect(loaded.strictModel).toBe(true);
+    expect(loaded.stickyModel).toBe(false);
+    expect(loaded.cursorFastModel).toBe("composer-2.5");
     expect(loaded.workspace).toBe("/workspace");
     expect(loaded.sessionsLogPath).toBe(path.join("/workspace", "sessions.log"));
     expect(loaded.chatOnlyWorkspace).toBe(true);
@@ -64,6 +66,8 @@ describe("loadEnvConfig", () => {
         CURSOR_BRIDGE_FORCE: "yes",
         CURSOR_BRIDGE_APPROVE_MCPS: "on",
         CURSOR_BRIDGE_STRICT_MODEL: "off",
+        CURSOR_BRIDGE_STICKY_MODEL: "true",
+        CURSOR_BRIDGE_FAST_MODEL: "org/composer-2",
         CURSOR_BRIDGE_TIMEOUT_MS: "60000",
         CURSOR_BRIDGE_DEFAULT_MODEL: "org/claude-3-opus",
       },
@@ -72,6 +76,8 @@ describe("loadEnvConfig", () => {
     expect(loaded.force).toBe(true);
     expect(loaded.approveMcps).toBe(true);
     expect(loaded.strictModel).toBe(false);
+    expect(loaded.stickyModel).toBe(true);
+    expect(loaded.cursorFastModel).toBe("composer-2");
     expect(loaded.timeoutMs).toBe(60000);
     expect(loaded.defaultModel).toBe("claude-3-opus");
   });

@@ -58,6 +58,8 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     force: false,
     approveMcps: false,
     strictModel: true,
+    stickyModel: false,
+    cursorFastModel: "composer-2.5",
     workspace: process.cwd(),
     timeoutMs: 30_000,
     sessionsLogPath: tmpLogPath,

@@ -15,6 +15,8 @@ describe("loadBridgeConfig", () => {
     expect(config.force).toBe(false);
     expect(config.approveMcps).toBe(false);
     expect(config.strictModel).toBe(true);
+    expect(config.stickyModel).toBe(false);
+    expect(config.cursorFastModel).toBe("composer-2.5");
     expect(config.mode).toBe("ask");
     expect(config.workspace).toBe("/workspace");
     expect(config.chatOnlyWorkspace).toBe(true);

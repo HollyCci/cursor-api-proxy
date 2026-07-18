@@ -143,6 +143,168 @@ describe("VirginSessionPool", () => {
   });
 });
 
+describe("VirginSessionPool checkoutDetailed miss reasons", () => {
+  it("reports not_enabled when pool disabled", () => {
+    const pool = makePool({ enabled: false });
+    expect(pool.checkoutDetailed("acc1", "composer-2.5")).toEqual({
+      ok: false,
+      reason: "not_enabled",
+    });
+    expect(pool.checkout("acc1")).toBeNull();
+    pool.shutdown();
+  });
+
+  it("reports disabled when account is disabled", () => {
+    const pool = makePool();
+    pool.disableAccount("/acc1");
+    expect(pool.checkoutDetailed("/acc1", "composer-2.5")).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
+    pool.shutdown();
+  });
+
+  it("reports empty when no idle and no warming for model", () => {
+    const pool = makePool();
+    expect(pool.checkoutDetailed("acc-empty", "composer-2.5")).toEqual({
+      ok: false,
+      reason: "empty",
+    });
+    pool.shutdown();
+  });
+
+  it("reports warming when only warming slots exist for model", async () => {
+    const createGate = makeDeferred();
+    const fakeConn = {
+      id: "fake-warm",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => {
+        await createGate.promise;
+        return {
+          sessionId: "sess-warm",
+          createdAt: Date.now(),
+          sessionCwd: undefined,
+          effectiveModel: "composer-2.5",
+        };
+      },
+      promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+    } as unknown as AcpConnection;
+
+    const pool = makePool({
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    void pool.ensureWarm("acc-warming", "composer-2.5");
+    await waitWarming(pool, "acc-warming");
+
+    expect(pool.checkoutDetailed("acc-warming", "composer-2.5")).toEqual({
+      ok: false,
+      reason: "warming",
+    });
+    expect(pool.checkout("acc-warming", "composer-2.5")).toBeNull();
+
+    createGate.resolve();
+    pool.shutdown();
+  });
+
+  it("reports model_mismatch when idle exists for a different model", async () => {
+    const pool = makePool({ defaultModel: "gpt-4" });
+    await pool.ensureWarm("/abs/acc-mm", "gpt-4");
+    await waitPooled(pool, "/abs/acc-mm");
+    expect(pool.checkoutDetailed("/abs/acc-mm", "other-model")).toEqual({
+      ok: false,
+      reason: "model_mismatch",
+    });
+    pool.shutdown();
+  });
+
+  it("reports dead when matching idle session has a dead connection", async () => {
+    let connRef: { isDead: boolean } | null = null;
+    const pool = makePool({
+      startConnection: async () => {
+        connRef = {
+          id: "flip-dead",
+          isDead: false,
+          kill: vi.fn(),
+          cancel: vi.fn(async () => undefined),
+          createVirginSession: async () => ({
+            sessionId: "sess-flip",
+            createdAt: Date.now(),
+            sessionCwd: undefined,
+            effectiveModel: "__default__",
+          }),
+          promptOnce: async () => ({ stdout: "", latencyMarks: {} }),
+        } as unknown as { isDead: boolean };
+        return connRef as unknown as AcpConnection;
+      },
+    });
+    await pool.ensureWarm("acc-flip");
+    await waitPooled(pool, "acc-flip");
+    expect(connRef).not.toBeNull();
+    connRef!.isDead = true;
+    expect(pool.checkoutDetailed("acc-flip")).toEqual({
+      ok: false,
+      reason: "dead",
+    });
+    pool.shutdown();
+  });
+
+
+  it("reports capacity when at maxSessions with no matching idle", async () => {
+    const createGate = makeDeferred();
+    const fakeConn = {
+      id: "cap-conn",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => {
+        await createGate.promise;
+        return {
+          sessionId: `sess-cap-${Date.now()}`,
+          createdAt: Date.now(),
+          sessionCwd: undefined,
+          effectiveModel: "composer-2.5",
+        };
+      },
+      promptOnce: async () => ({ stdout: "ok", latencyMarks: {} }),
+    } as unknown as AcpConnection;
+
+    const pool = makePool({
+      minIdle: 1,
+      maxSessions: 1,
+      defaultModel: "composer-2.5",
+      startConnection: async () => fakeConn,
+    });
+    // Hold one checked_out slot at capacity: warm fully, checkout, then miss.
+    createGate.resolve();
+    await pool.ensureWarm("acc-cap", "composer-2.5");
+    await waitPooled(pool, "acc-cap");
+    const held = pool.checkout("acc-cap", "composer-2.5");
+    expect(held).not.toBeNull();
+    expect(pool.checkoutDetailed("acc-cap", "composer-2.5")).toEqual({
+      ok: false,
+      reason: "capacity",
+    });
+    await held!.discard();
+    pool.shutdown();
+  });
+
+  it("checkoutDetailed returns ok with value on hit", async () => {
+    const pool = makePool();
+    await pool.ensureWarm("acc-hit");
+    await waitPooled(pool, "acc-hit");
+    const result = pool.checkoutDetailed("acc-hit");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sessionId).toBeTruthy();
+      await result.value.discard();
+    }
+    pool.shutdown();
+  });
+});
+
 describe("VirginSessionPool disable / epoch gates", () => {
   it("checkout returns null after disableAccount", () => {
     const pool = makePool();
@@ -151,6 +313,7 @@ describe("VirginSessionPool disable / epoch gates", () => {
     expect(pool.checkout("/acc1", "composer-2.5")).toBeNull();
     pool.shutdown();
   });
+
 
   it("ensureWarm is a no-op when account is disabled", async () => {
     const pool = makePool();

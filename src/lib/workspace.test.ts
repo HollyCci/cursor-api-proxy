@@ -18,6 +18,8 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     force: false,
     approveMcps: false,
     strictModel: false,
+    stickyModel: false,
+    cursorFastModel: "composer-2.5",
     workspace: "/tmp/proj-base",
     timeoutMs: 300_000,
     sessionsLogPath: "/tmp/sessions.log",

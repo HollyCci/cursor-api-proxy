@@ -35,6 +35,13 @@ export type BridgeConfig = {
   force: boolean;
   approveMcps: boolean;
   strictModel: boolean;
+  /**
+   * When true, omitted request model reuses lastRequestedModelRef (opt-in).
+   * Default false — omitted model uses defaultModel only.
+   */
+  stickyModel: boolean;
+  /** Canonical model for `cursor-fast` / `fast` request aliases. */
+  cursorFastModel: string;
   workspace: string;
   timeoutMs: number;
   /** Path to TLS certificate file (e.g. Tailscale cert). When set with tlsKeyPath, server uses HTTPS. */
@@ -110,6 +117,8 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     force: env.force,
     approveMcps: env.approveMcps,
     strictModel: env.strictModel,
+    stickyModel: env.stickyModel,
+    cursorFastModel: env.cursorFastModel,
     workspace: env.workspace,
     timeoutMs: env.timeoutMs,
     tlsCertPath: env.tlsCertPath,

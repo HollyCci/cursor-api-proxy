@@ -10,12 +10,23 @@ import {
   type AccountStat,
 } from "./account-pool.js";
 import type { BridgeConfig } from "./config.js";
+import { getSessionPool } from "./acp-session-pool.js";
+import { getPoolMetricsSnapshot } from "./pool-metrics.js";
 
 export type AccountCapacityView = {
   total: number;
   usable: number;
   disabled: Array<{ configDir: string; reason: string; disabledAt: number }>;
   rateLimited: Array<{ configDir: string; until: number }>;
+};
+
+export type PoolStatusView = {
+  enabled: boolean;
+  metrics: ReturnType<typeof getPoolMetricsSnapshot>;
+  inventory: Record<
+    string,
+    { pooled: number; warming: number; checkedOut: number }
+  >;
 };
 
 /** Pure view of account pool capacity for GET /api/status. */
@@ -41,6 +52,18 @@ export function buildAccountCapacityView(
         until: s.rateLimitUntil,
       })),
   };
+}
+
+/** Pure view of session pool status for GET /api/status. */
+export function buildPoolStatusView(
+  enabled: boolean,
+  metrics: ReturnType<typeof getPoolMetricsSnapshot>,
+  inventory: Record<
+    string,
+    { pooled: number; warming: number; checkedOut: number }
+  >,
+): PoolStatusView {
+  return { enabled, metrics, inventory };
 }
 
 const PLIST_LABEL = "com.cursor-api-proxy";
@@ -222,6 +245,7 @@ function getStatus(
   const plistPath = path.join(home, "Library/LaunchAgents", `${PLIST_LABEL}.plist`);
   const launchdLoaded = process.platform === "darwin" ? launchdLoadedSync() : false;
 
+  const sessionPool = getSessionPool();
   const env = process.env;
   cb({
     running,
@@ -245,6 +269,11 @@ function getStatus(
     platform: `${process.platform} ${process.arch}`,
     startedAt: new Date(START_TIME).toISOString(),
     accounts: buildAccountCapacityView(getAccountStats(), getUsableCount()),
+    pool: buildPoolStatusView(
+      Boolean(sessionPool?.enabled),
+      getPoolMetricsSnapshot(),
+      sessionPool?.stats() ?? {},
+    ),
   });
 }
 

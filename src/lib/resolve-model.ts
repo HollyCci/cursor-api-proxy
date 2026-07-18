@@ -1,8 +1,15 @@
 import type { BridgeConfig } from "./config.js";
 
+const FAST_ALIASES = new Set(["cursor-fast", "fast"]);
+
+function normalizeFastAlias(requested: string): string | undefined {
+  const key = requested.trim().toLowerCase();
+  return FAST_ALIASES.has(key) ? key : undefined;
+}
+
 /**
  * Resolve the requested model (already normalized) to the final model string,
- * applying strictModel and lastRequestedModelRef semantics.
+ * applying cursor-fast aliases and optional sticky lastRequestedModelRef.
  */
 export function resolveModel(
   requested: string | undefined,
@@ -15,12 +22,18 @@ export function resolveModel(
   // "default" matches ACP catalog name for session default model — pass through directly
   if (isDefault) return "default";
 
-  return (
-    explicitModel ??
-    (config.strictModel ? lastRequestedModelRef.current : undefined) ??
-    lastRequestedModelRef.current ??
-    config.defaultModel
-  );
+  if (explicitModel) {
+    if (normalizeFastAlias(explicitModel)) {
+      return config.cursorFastModel;
+    }
+    return explicitModel;
+  }
+
+  if (config.stickyModel && lastRequestedModelRef.current) {
+    return lastRequestedModelRef.current;
+  }
+
+  return config.defaultModel;
 }
 
 /**
