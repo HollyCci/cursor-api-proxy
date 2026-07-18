@@ -8,6 +8,9 @@ type AccountStatus = {
   totalErrors: number;
   totalRateLimits: number;
   totalLatencyMs: number;
+  disabled: boolean;
+  disabledReason: string;
+  disabledAt: number;
 };
 
 export type AccountStat = {
@@ -20,6 +23,9 @@ export type AccountStat = {
   totalLatencyMs: number;
   isRateLimited: boolean;
   rateLimitUntil: number;
+  isDisabled: boolean;
+  disabledReason: string;
+  disabledAt: number;
 };
 
 export class AccountPool {
@@ -36,32 +42,32 @@ export class AccountPool {
       totalErrors: 0,
       totalRateLimits: 0,
       totalLatencyMs: 0,
+      disabled: false,
+      disabledReason: "",
+      disabledAt: 0,
     }));
   }
 
   /**
    * Get the least busy account using a combination of active requests and round-robin.
-   * Ignores accounts that are currently rate limited.
+   * Never returns permanently disabled accounts. Among non-disabled accounts,
+   * ignores those currently rate limited (unless all non-disabled are rate-limited,
+   * then uses the one that recovers soonest).
    */
   public getNextConfigDir(): string | undefined {
     if (this.accounts.length === 0) {
       return undefined;
     }
 
+    const nonDisabled = this.accounts.filter((a) => !a.disabled);
+    if (nonDisabled.length === 0) return undefined;
+
     const now = Date.now();
-
-    // Filter out rate-limited accounts (unless they are all rate-limited, then just use the one that recovers soonest)
-    const availableAccounts = this.accounts.filter(
-      (a) => a.rateLimitUntil < now,
-    );
-
-    let targetAccounts = availableAccounts;
-    if (availableAccounts.length === 0) {
-      // If all are rate limited, sort by who recovers first
-      targetAccounts = [...this.accounts].sort(
-        (a, b) => a.rateLimitUntil - b.rateLimitUntil,
-      );
-    }
+    const available = nonDisabled.filter((a) => a.rateLimitUntil < now);
+    const targetAccounts =
+      available.length > 0
+        ? available
+        : [...nonDisabled].sort((a, b) => a.rateLimitUntil - b.rateLimitUntil);
 
     // Sort by active requests (ascending), then by last used (ascending for round-robin effect)
     const sorted = [...targetAccounts].sort((a, b) => {
@@ -120,6 +126,30 @@ export class AccountPool {
     }
   }
 
+  public reportAccountDisabled(configDir?: string, reason?: string): void {
+    if (!configDir) return;
+    const account = this.accounts.find((a) => a.configDir === configDir);
+    if (account) {
+      account.disabled = true;
+      account.disabledReason = reason ?? "";
+      account.disabledAt = Date.now();
+    }
+  }
+
+  public reportAccountEnabled(configDir?: string): void {
+    if (!configDir) return;
+    const account = this.accounts.find((a) => a.configDir === configDir);
+    if (account) {
+      account.disabled = false;
+      account.disabledReason = "";
+      account.disabledAt = 0;
+    }
+  }
+
+  public getUsableCount(): number {
+    return this.accounts.filter((a) => !a.disabled).length;
+  }
+
   public getStats(): AccountStat[] {
     const now = Date.now();
     return this.accounts.map((a) => ({
@@ -132,6 +162,9 @@ export class AccountPool {
       totalLatencyMs: a.totalLatencyMs,
       isRateLimited: a.rateLimitUntil > now,
       rateLimitUntil: a.rateLimitUntil,
+      isDisabled: a.disabled,
+      disabledReason: a.disabledReason,
+      disabledAt: a.disabledAt,
     }));
   }
 
@@ -168,6 +201,25 @@ export function reportRateLimit(configDir?: string, penaltyMs?: number): void {
   if (globalPool) {
     globalPool.reportRateLimit(configDir, penaltyMs);
   }
+}
+
+export function reportAccountDisabled(
+  configDir?: string,
+  reason?: string,
+): void {
+  if (globalPool) {
+    globalPool.reportAccountDisabled(configDir, reason);
+  }
+}
+
+export function reportAccountEnabled(configDir?: string): void {
+  if (globalPool) {
+    globalPool.reportAccountEnabled(configDir);
+  }
+}
+
+export function getUsableCount(): number {
+  return globalPool?.getUsableCount() ?? 0;
 }
 
 export function reportRequestSuccess(

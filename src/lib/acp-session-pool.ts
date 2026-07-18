@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import {
   AcpConnection,
   normalizePoolModelKey,
+  type AcpConnectionOptions,
 } from "./acp-connection.js";
 
 export type SessionPoolConfig = {
@@ -36,6 +37,8 @@ export type SessionPoolConfig = {
   spawnOptions?: { windowsVerbatimArguments?: boolean };
   skipAuthenticate?: boolean;
   defaultModel?: string;
+  /** Test seam: override ACP connection start (avoids real/fake spawn). */
+  startConnection?: (opts: AcpConnectionOptions) => Promise<AcpConnection>;
 };
 
 type SlotState = "warming" | "pooled" | "checked_out" | "dead";
@@ -94,6 +97,8 @@ export class VirginSessionPool {
   private readonly refillInFlight = new Set<string>();
   private readonly connections = new Map<string, AcpConnection>();
   private readonly connecting = new Map<string, Promise<AcpConnection>>();
+  private readonly disabledAccounts = new Set<string>();
+  private readonly accountEpoch = new Map<string, number>();
 
   constructor(cfg: SessionPoolConfig) {
     this.cfg = cfg;
@@ -101,6 +106,36 @@ export class VirginSessionPool {
 
   get enabled(): boolean {
     return this.cfg.enabled;
+  }
+
+  private epochOf(accountKey: string): number {
+    return this.accountEpoch.get(accountKey) ?? 0;
+  }
+
+  isAccountDisabled(accountKey: string): boolean {
+    return this.disabledAccounts.has(accountKey || "default");
+  }
+
+  disableAccount(accountKey: string): void {
+    const key = accountKey || "default";
+    this.disabledAccounts.add(key);
+    this.accountEpoch.set(key, this.epochOf(key) + 1);
+    const list = this.slots.get(key) ?? [];
+    for (const s of [...list]) {
+      if (s.state === "pooled") {
+        s.state = "dead";
+        void s.conn.cancel(s.sessionId).catch(() => undefined);
+        rmSessionCwd(s.sessionCwd);
+        this.removeSlot(key, s.sessionId);
+      }
+      // warming: leave; refillOne checks epoch before pooling
+      // checked_out: leave; discard must not refill
+    }
+    this.maybeKillConnIfDisabledIdle(key);
+  }
+
+  enableAccount(accountKey: string): void {
+    this.disabledAccounts.delete(accountKey || "default");
   }
 
   stats(): Record<string, { pooled: number; warming: number; checkedOut: number }> {
@@ -122,6 +157,7 @@ export class VirginSessionPool {
   async ensureWarm(accountKey: string, model?: string): Promise<void> {
     if (!this.cfg.enabled) return;
     const key = accountKey || "default";
+    if (this.disabledAccounts.has(key)) return;
     const modelKey = normalizePoolModelKey(model, this.cfg.defaultModel);
     this.evictExpired(key);
     const list = this.slots.get(key) ?? [];
@@ -145,6 +181,7 @@ export class VirginSessionPool {
   checkout(accountKey: string, model?: string): PoolCheckout | null {
     if (!this.cfg.enabled) return null;
     const key = accountKey || "default";
+    if (this.disabledAccounts.has(key)) return null;
     const modelKey = normalizePoolModelKey(model, this.cfg.defaultModel);
     this.evictExpired(key);
     const list = this.slots.get(key) ?? [];
@@ -165,6 +202,7 @@ export class VirginSessionPool {
     );
 
     const discard = async () => {
+      const shouldRefill = !this.disabledAccounts.has(key);
       slot.state = "dead";
       try {
         await slot.conn.cancel(slot.sessionId);
@@ -173,7 +211,8 @@ export class VirginSessionPool {
       }
       rmSessionCwd(slot.sessionCwd);
       this.removeSlot(key, slot.sessionId);
-      void this.ensureWarm(key, model);
+      if (shouldRefill) void this.ensureWarm(key, model);
+      else this.maybeKillConnIfDisabledIdle(key);
     };
 
     return {
@@ -229,6 +268,20 @@ export class VirginSessionPool {
     this.slots.set(accountKey, keep);
   }
 
+  private maybeKillConnIfDisabledIdle(accountKey: string): void {
+    if (!this.disabledAccounts.has(accountKey)) return;
+    const remaining = this.slots.get(accountKey) ?? [];
+    const busy = remaining.some(
+      (s) => s.state === "checked_out" || s.state === "warming",
+    );
+    if (busy) return;
+    const conn = this.connections.get(accountKey);
+    if (conn) {
+      conn.kill();
+      this.connections.delete(accountKey);
+    }
+  }
+
   private async getOrStartConn(accountKey: string): Promise<AcpConnection> {
     const existing = this.connections.get(accountKey);
     if (existing && !existing.isDead) return existing;
@@ -240,7 +293,7 @@ export class VirginSessionPool {
       const cwd = poolProcessCwd(accountKey);
       const accountEnv = this.cfg.resolveAccountEnv?.(accountKey) ?? {};
       const env = { ...this.cfg.env, ...accountEnv };
-      const conn = await AcpConnection.start({
+      const opts: AcpConnectionOptions = {
         command: this.cfg.command,
         args: this.cfg.args,
         cwd,
@@ -248,7 +301,10 @@ export class VirginSessionPool {
         spawnOptions: this.cfg.spawnOptions,
         skipAuthenticate: this.cfg.skipAuthenticate,
         accountKey,
-      });
+      };
+      const conn = this.cfg.startConnection
+        ? await this.cfg.startConnection(opts)
+        : await AcpConnection.start(opts);
       this.connections.set(accountKey, conn);
       return conn;
     })();
@@ -265,6 +321,9 @@ export class VirginSessionPool {
     accountKey: string,
     modelKey: string,
   ): Promise<void> {
+    if (this.disabledAccounts.has(accountKey)) return;
+    const epoch = this.epochOf(accountKey);
+
     const list = this.slots.get(accountKey) ?? [];
     const live = list.filter((s) => s.state !== "dead").length;
     if (live >= this.cfg.maxSessions) return;
@@ -295,6 +354,19 @@ export class VirginSessionPool {
       warming.createdAt = virgin.createdAt;
       warming.sessionCwd = virgin.sessionCwd;
       warming.model = virgin.effectiveModel;
+
+      if (
+        this.disabledAccounts.has(accountKey) ||
+        this.epochOf(accountKey) !== epoch
+      ) {
+        warming.state = "dead";
+        void conn.cancel(virgin.sessionId).catch(() => undefined);
+        rmSessionCwd(warming.sessionCwd);
+        this.removeSlot(accountKey, warming.sessionId);
+        this.maybeKillConnIfDisabledIdle(accountKey);
+        return;
+      }
+
       warming.state = "pooled";
       console.log(
         `[acp-pool] warmed account=${accountKey} session=${virgin.sessionId} model=${virgin.effectiveModel} conn=${conn.id}`,
@@ -303,6 +375,7 @@ export class VirginSessionPool {
       warming.state = "dead";
       rmSessionCwd(warming.sessionCwd);
       this.removeSlot(accountKey, warming.sessionId);
+      this.maybeKillConnIfDisabledIdle(accountKey);
       throw err;
     } finally {
       this.refillInFlight.delete(flightKey);
@@ -332,6 +405,10 @@ export function initSessionPool(cfg: SessionPoolConfig): VirginSessionPool | nul
 export function shutdownSessionPool(): void {
   globalPool?.shutdown();
   globalPool = null;
+}
+
+export function disableSessionPoolAccount(accountKey: string): void {
+  getSessionPool()?.disableAccount(accountKey);
 }
 
 /** Account key: resolved absolute config dir, or "default". */

@@ -180,6 +180,32 @@ describe("AccountPool edge cases", () => {
     expect(stats[0].totalErrors).toBe(1);
     expect(stats[0].totalLatencyMs).toBe(150);
   });
+
+  it("skips permanently disabled accounts", () => {
+    const pool = new AccountPool(["/dir1", "/dir2"]);
+    pool.reportAccountDisabled("/dir1", "upgrade_plan");
+    expect(pool.getNextConfigDir()).toBe("/dir2");
+    expect(pool.getNextConfigDir()).toBe("/dir2");
+    expect(pool.getUsableCount()).toBe(1);
+  });
+
+  it("returns undefined when all accounts are disabled (no rate-limit fallback)", () => {
+    const pool = new AccountPool(["/dir1", "/dir2"]);
+    pool.reportAccountDisabled("/dir1", "upgrade_plan");
+    pool.reportAccountDisabled("/dir2", "upgrade_plan");
+    pool.reportRateLimit("/dir1", 60_000);
+    expect(pool.getNextConfigDir()).toBeUndefined();
+    expect(pool.getUsableCount()).toBe(0);
+  });
+
+  it("reportAccountEnabled clears disable", () => {
+    const pool = new AccountPool(["/dir1", "/dir2"]);
+    pool.reportAccountDisabled("/dir1", "upgrade_plan");
+    pool.reportAccountEnabled("/dir1");
+    expect(pool.getStats().find((s) => s.configDir === "/dir1")?.isDisabled).toBe(
+      false,
+    );
+  });
 });
 
 describe("Global account pool functions", () => {
