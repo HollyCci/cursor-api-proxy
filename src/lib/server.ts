@@ -79,6 +79,7 @@ function maybeInitSessionPool(config: BridgeConfig): void {
       skipAuthenticate: config.acpSkipAuthenticate,
       defaultModel: defaultWarm,
       fastModel: fastWarm,
+      requestTimeoutMs: config.timeoutMs,
       resolveAccountEnv: (accountKey) => {
         // Auth via CURSOR_CONFIG_DIR; HOME is an isolated gateway dir under tmp.
         if (accountKey === "default") {

@@ -35,6 +35,35 @@ function makePool(extra?: Partial<ConstructorParameters<typeof VirginSessionPool
   });
 }
 
+describe("VirginSessionPool requestTimeoutMs", () => {
+  it("forwards requestTimeoutMs into AcpConnection.start options", async () => {
+    const seen: Array<{ requestTimeoutMs?: number }> = [];
+    const fakeConn = {
+      id: "fake",
+      isDead: false,
+      kill: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+      createVirginSession: async () => ({
+        sessionId: "s1",
+        createdAt: Date.now(),
+        effectiveModel: "composer-2.5",
+      }),
+      promptOnce: async () => ({ stdout: "ok", latencyMarks: {} }),
+    } as unknown as AcpConnection;
+    const pool = makePool({
+      requestTimeoutMs: 300_000,
+      startConnection: async (opts) => {
+        seen.push({ requestTimeoutMs: opts.requestTimeoutMs });
+        return fakeConn;
+      },
+    });
+    await pool.ensureWarm("acc-timeout", "composer-2.5");
+    await waitPooled(pool, "acc-timeout");
+    expect(seen[0]?.requestTimeoutMs).toBe(300_000);
+    pool.shutdown();
+  });
+});
+
 async function waitPooled(pool: VirginSessionPool, account: string, n = 1) {
   for (let i = 0; i < 80; i++) {
     if ((pool.stats()[account]?.pooled ?? 0) >= n) return;

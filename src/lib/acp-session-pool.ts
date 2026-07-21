@@ -40,6 +40,11 @@ export type SessionPoolConfig = {
   defaultModel?: string;
   /** When set, warm slots for this model use requireExactModel (cursor-fast lane). */
   fastModel?: string;
+  /**
+   * Per JSON-RPC / session/prompt timeout (ms). Should match
+   * `CURSOR_BRIDGE_TIMEOUT_MS` so long LibreChat turns are not cut at 60s.
+   */
+  requestTimeoutMs?: number;
   /** Test seam: override ACP connection start (avoids real/fake spawn). */
   startConnection?: (opts: AcpConnectionOptions) => Promise<AcpConnection>;
 };
@@ -481,6 +486,7 @@ export class VirginSessionPool {
         spawnOptions: this.cfg.spawnOptions,
         skipAuthenticate: this.cfg.skipAuthenticate || hasApiKey,
         accountKey,
+        requestTimeoutMs: this.cfg.requestTimeoutMs,
       };
       const conn = this.cfg.startConnection
         ? await this.cfg.startConnection(opts)

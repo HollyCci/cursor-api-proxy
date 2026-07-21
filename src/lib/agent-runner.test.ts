@@ -228,6 +228,77 @@ describe("runAgentSync pool observation", () => {
     ).toBe(1);
   });
 
+  it("passes BridgeConfig.timeoutMs as ACP requestTimeoutMs on cold path", async () => {
+    initSessionPool({
+      enabled: true,
+      minIdle: 1,
+      maxSessions: 2,
+      idleTtlMs: 60_000,
+      command: node,
+      args: [fakeServerPath],
+      skipAuthenticate: true,
+      defaultModel: "composer-2.5",
+    });
+    vi.mocked(runAcpSync).mockResolvedValue({
+      code: 0,
+      stdout: "ok",
+      stderr: "",
+      latencyMarks: {},
+    });
+    const account = poolAccountKey("/tmp/cursor-proxy-pool-obs/acc-timeout");
+    await runAgentSync(
+      baseConfig({ timeoutMs: 300_000 }),
+      cwd,
+      true,
+      ["acp", "--mode", "ask", "--model", "composer-2.5"],
+      undefined,
+      "hi",
+      account,
+    );
+    expect(runAcpSync).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ requestTimeoutMs: 300_000 }),
+    );
+  });
+
+  it("passes BridgeConfig.timeoutMs as ACP requestTimeoutMs on cold stream path", async () => {
+    initSessionPool({
+      enabled: true,
+      minIdle: 1,
+      maxSessions: 2,
+      idleTtlMs: 60_000,
+      command: node,
+      args: [fakeServerPath],
+      skipAuthenticate: true,
+      defaultModel: "composer-2.5",
+    });
+    vi.mocked(runAcpStream).mockResolvedValue({
+      code: 0,
+      stderr: "",
+    });
+    const account = poolAccountKey("/tmp/cursor-proxy-pool-obs/acc-timeout-stream");
+    await runAgentStream(
+      baseConfig({ timeoutMs: 300_000 }),
+      cwd,
+      true,
+      ["acp", "--mode", "ask", "--model", "composer-2.5"],
+      () => undefined,
+      undefined,
+      "hi",
+      account,
+    );
+    expect(runAcpStream).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ requestTimeoutMs: 300_000 }),
+      expect.anything(),
+      undefined,
+    );
+  });
+
   it("attaches warming miss when only warming slots exist", async () => {
     const createGate = {
       promise: Promise.resolve(),
